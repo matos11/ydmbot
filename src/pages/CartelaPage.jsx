@@ -5,14 +5,15 @@ import {
   ref, onValue, get, set, update, remove,
   serverTimestamp, runTransaction, onDisconnect
 } from 'firebase/database'
-import { FEE, PAY, MIN_PLAYERS, MAX_CARDS, TIMER_SEC, sanitizeKey } from '../utils.js'
+import { FEE, PAY, MIN_PLAYERS, MAX_CARDS, sanitizeKey } from '../utils.js'
 
-// ── Server time offset ────────────────────────────────────
+const MOBILE_TIMER_SEC = 20;
+
 let svrOff = 0
 onValue(ref(db, '.info/serverTimeOffset'), s => { svrOff = s.val() || 0 })
 const now = () => Date.now() + svrOff
 
-// ── Default user (replace with real auth as needed) ───────
+// ── Added 100 Birr Starting Balance for Guests ───────────
 function getUser() {
   try { return JSON.parse(localStorage.getItem('bingoUser') || 'null') } catch { return null }
 }
@@ -25,24 +26,68 @@ function ensureUser() {
   return u
 }
 
-// ── Mini card preview component ───────────────────────────
-function MiniCard({ data, id }) {
-  if (!data) return <div className="mini-error">Loading Card Matrix...</div>
+function FullMobileCard({ data, id }) {
+  if (!data) return <div style={{ color: '#fff', padding: '15px', textAlign: 'center' }}>Loading Matrix...</div>
   const cols = ['b', 'i', 'n', 'g', 'o']
   return (
-    <div className="mini-wrap">
-      <div className="mini-title">Card {id}</div>
-      <table className="mini-table">
+    <div style={{ width: '100%', background: '#161616', borderRadius: '8px', padding: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
+      <div style={{ color: '#4caf50', fontWeight: 'bold', fontSize: '16px', marginBottom: '8px', textAlign: 'center', letterSpacing: '1px' }}>
+        CARD NUMBER: {id}
+      </div>
+      <table style={{ 
+        width: '100%', 
+        borderCollapse: 'collapse', 
+        fontSize: '15px', 
+        color: '#fff', 
+        textAlign: 'center',
+        fontWeight: 'bold'
+      }}>
         <thead>
-          <tr>{cols.map(l => <th key={l} className={l}>{l.toUpperCase()}</th>)}</tr>
+          <tr style={{ background: '#222' }}>
+            {cols.map(l => (
+              <th key={l} style={{ 
+                padding: '8px 0', 
+                border: '1px solid #333', 
+                textTransform: 'uppercase', 
+                color: l === 'n' ? '#ffeb3b' : '#4caf50',
+                fontSize: '16px'
+              }}>{l}</th>
+            ))}
+          </tr>
         </thead>
         <tbody>
           {Array.from({ length: 5 }, (_, r) => (
             <tr key={r}>
               {cols.map((col, c) => {
-                if (c === 2 && r === 2) return <td key={c} className="free">★</td>
-                const v = c === 2 ? (data.n?.[r < 2 ? r : r - 1] ?? '') : (data[cols[c]]?.[r] ?? '')
-                return <td key={c}>{v}</td>
+                if (c === 2 && r === 2) {
+                  return (
+                    <td key={c} style={{ 
+                      border: '1px solid #333', 
+                      background: '#e91e63', 
+                      color: '#fff', 
+                      fontSize: '18px',
+                      padding: '10px 0' 
+                    }}>★</td>
+                  )
+                }
+                const colData = data[col] || data[col.toUpperCase()] || []
+                let v = ''
+                if (c === 2) {
+                  const targetIdx = r < 2 ? r : r - 1
+                  v = colData[targetIdx] ?? ''
+                } else {
+                  v = colData[r] ?? ''
+                }
+                return (
+                  <td key={c} style={{ 
+                    border: '1px solid #333', 
+                    padding: '10px 0', 
+                    background: '#242424',
+                    textShadow: '0 1px 2px rgba(0,0,0,0.8)'
+                  }}>
+                    {v}
+                  </td>
+                )
               })}
             </tr>
           ))}
@@ -74,7 +119,6 @@ export default function CartelaPage() {
   const [loading, setLoading]             = useState(true)
   const [wasDisconnected, setWasDisconnected] = useState(false)
 
-  // Refs to avoid stale closures in intervals
   const stateRef = useRef({})
   stateRef.current = { selectedCards, joined, gameActive, pCount, bal, taken, prize }
 
@@ -83,28 +127,37 @@ export default function CartelaPage() {
   const gameIdRef = useRef(null)
   const gameNumRef = useRef(1)
 
-  // ── Load cartelas.json from Public Folder ──────────────────
   useEffect(() => {
-    fetch('cartelas.json')
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP network error! Status: ${r.status}`)
-        return r.json()
-      })
-      .then(data => {
-        console.log("Successfully fetched cartelas database:", data)
-        const mapped = {}
-        Object.keys(data).forEach(k => { mapped[Number(k)] = data[k] })
-        setAllCards(mapped)
+    get(ref(db, 'cartelas'))
+      .then(snap => {
+        if (snap.exists()) {
+          const data = snap.val()
+          const mapped = {}
+          Object.keys(data).forEach(k => { mapped[Number(k)] = data[k] })
+          setAllCards(mapped)
+        }
+        setLoading(false)
       })
       .catch((err) => {
-        console.error("Critical Error: Could not parse cartelas.json. Verify placement inside public/ folder.", err)
-        setAllCards({})
+        console.error("DB down:", err)
+        setLoading(false)
       })
   }, [])
 
-  // ── Realtime listeners ───────────────────────────────────
   useEffect(() => {
+    // ── Pre-fill Guest Accounts with 100 Birr if balance doesn't exist ──
     const userRef = ref(db, `users/${playerKey}`)
+    get(userRef).then(snap => {
+      if (!snap.exists() && playerKey.startsWith('guest_')) {
+        set(userRef, {
+          name: user.name,
+          phone: user.phone,
+          balance: 100, // 100 Birr Test Funding
+          createdAt: serverTimestamp()
+        })
+      }
+    })
+
     const unsub1 = onValue(userRef, snap => {
       if (snap.exists()) {
         const u = snap.val()
@@ -116,17 +169,16 @@ export default function CartelaPage() {
 
     const takenRef = ref(db, 'lobby/takenCards')
     const unsub2 = onValue(takenRef, snap => {
-      const t = snap.val() || {}
-      setTaken(t)
-      const count = Object.keys(t).length
-      setPrize(Math.floor(count * FEE * PAY))
+      setTaken(snap.val() || {})
     })
 
+    // ── Derash calculation updated to multiply by number of players ──
     const playersRef = ref(db, 'lobby/players')
     const unsub3 = onValue(playersRef, snap => {
-      const count = snap.numChildren()
-      setPCount(count)
-      if (count < MIN_PLAYERS) stopCountdown()
+      const data = snap.val() || {}
+      const activePlayerCount = Object.keys(data).length
+      setPCount(activePlayerCount)
+      setPrize(Math.floor(activePlayerCount * FEE * PAY))
     })
 
     const gnRef = ref(db, 'lobby/currentGameNum')
@@ -139,10 +191,9 @@ export default function CartelaPage() {
       const t = snap.val()
       if (!t) { stopCountdown(); return }
       if (stateRef.current.gameActive) return
-      const { pCount: pc, joined: j } = stateRef.current
-      if (pc < MIN_PLAYERS || !j) { stopCountdown(); return }
+
       const rem = Math.ceil((t - now()) / 1000)
-      if (rem > 0 && rem <= TIMER_SEC + 5) startCountdown(rem)
+      if (rem > 0 && rem <= MOBILE_TIMER_SEC + 5) startCountdown(rem)
       else if (rem <= 0) triggerGameStart()
     })
 
@@ -164,60 +215,33 @@ export default function CartelaPage() {
     }
   }, [playerKey, navigate])
 
-  // ── Restore session ──────────────────────────────────────
   useEffect(() => {
     if (Object.keys(allCards).length === 0) return
-    restoreSession()
-  }, [allCards])
-
-  // ── Check if game already started ───────────────────────
-  useEffect(() => {
-    if (!loading) return
-    Promise.all([
-      get(ref(db, 'game/status')),
-      get(ref(db, 'game/meta/started'))
-    ]).then(([statusSnap, metaSnap]) => {
-      if (statusSnap.val() === 'started' || metaSnap.val() === true) {
-        navigate(stateRef.current.joined ? '/game' : '/game?spectator=true')
-      } else {
-        setLoading(false)
-      }
-    })
-  }, [loading, navigate])
-
-  // ── Touch to unlock audio ────────────────────────────────
-  useEffect(() => {
-    const unlock = () => {
-      try { new (window.AudioContext || window.webkitAudioContext)() } catch (e) {}
-    }
-    document.addEventListener('touchstart', unlock, { once: true })
-    document.addEventListener('click', unlock, { once: true })
-    return () => { document.removeEventListener('touchstart', unlock); document.removeEventListener('click', unlock) }
-  }, [])
-
-  // ── Helper Actions ───────────────────────────────────────
-  async function restoreSession() {
-    const snap = await get(ref(db, `lobby/players/${playerKey}`))
-    if (!snap.exists()) return
-    const pData = snap.val()
-    const gid = pData.gameId
-    gameIdRef.current = gid
-    const numSnap = await get(ref(db, 'lobby/currentGameNum'))
-    gameNumRef.current = numSnap.val() || 1
-    setGameNum(gameNumRef.current)
-    const nums = pData.cartelas || []
-    const restored = nums.map(id => ({ id: parseInt(id), data: allCards[id] }))
-    setSelectedCards(restored)
-    setJoined(true)
-    setWasDisconnected(true)
-    localStorage.setItem('currentGameId', gid)
-    localStorage.setItem('currentGameNum', gameNumRef.current)
-    saveLocal(nums, restored.map(c => c.data), prize)
     
-    const presRef = ref(db, `lobby/presence/${playerKey}`)
-    set(presRef, true)
-    onDisconnect(presRef).remove()
-  }
+    async function restoreSession() {
+      const snap = await get(ref(db, `lobby/players/${playerKey}`))
+      if (!snap.exists()) return
+      const pData = snap.val()
+      const gid = pData.gameId
+      gameIdRef.current = gid
+      const numSnap = await get(ref(db, 'lobby/currentGameNum'))
+      gameNumRef.current = numSnap.val() || 1
+      setGameNum(gameNumRef.current)
+      const nums = pData.cartelas || []
+      const restored = nums.map(id => ({ id: parseInt(id), data: allCards[id] }))
+      setSelectedCards(restored)
+      setJoined(true)
+      setWasDisconnected(true)
+      localStorage.setItem('currentGameId', gid)
+      localStorage.setItem('currentGameNum', gameNumRef.current)
+      saveLocal(nums, restored.map(c => c.data), stateRef.current.prize)
+      
+      const presRef = ref(db, `lobby/presence/${playerKey}`)
+      set(presRef, true)
+      onDisconnect(presRef).remove()
+    }
+    restoreSession()
+  }, [allCards, playerKey])
 
   async function getOrCreateGameId() {
     if (gameIdRef.current) return gameIdRef.current
@@ -238,8 +262,6 @@ export default function CartelaPage() {
     }
     gameIdRef.current = gid
     setGameNum(gameNumRef.current)
-    localStorage.setItem('currentGameId', gid)
-    localStorage.setItem('currentGameNum', gameNumRef.current)
     return gid
   }
 
@@ -283,12 +305,19 @@ export default function CartelaPage() {
       }
       updates[`lobby/playerCards/${playerKey}`] = { cardNumbers, cardsData, gameId: gameIdRef.current }
       await update(ref(db), updates)
-      saveLocal(cardNumbers, cardsData, stateRef.current.prize)
+      
+      // Calculate real-time prize based on immediate state additions
+      const simulatedCount = stateRef.current.pCount === 0 ? 1 : stateRef.current.pCount
+      const projectedPrize = Math.floor(simulatedCount * FEE * PAY)
+
+      saveLocal(cardNumbers, cardsData, projectedPrize)
       setJoined(true)
       const presRef = ref(db, `lobby/presence/${playerKey}`)
       set(presRef, true)
       onDisconnect(presRef).remove()
-      await checkAndStartTimer()
+      
+      // Starts timer instantly for the 1st player
+      await checkAndStartTimer(projectedPrize)
     } catch (e) {
       console.error(e)
       setSelectedCards([])
@@ -339,23 +368,23 @@ export default function CartelaPage() {
       return
     }
     if (sc.length >= MAX_CARDS) return
-    if (!allCards[id]) return
-    const newCard = { id, data: allCards[id] }
+    
+    const newCard = { id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } }
     const newSelected = [...sc, newCard]
     setSelectedCards(newSelected)
     await joinWithCards(newSelected)
   }
 
-  async function checkAndStartTimer() {
+  // ── Modified checkAndStartTimer to accept current runtime prize pools ──
+  async function checkAndStartTimer(currentPrize) {
     if (stateRef.current.gameActive) return
-    const snap = await get(ref(db, 'lobby/players'))
-    if (snap.numChildren() < MIN_PLAYERS) return
+    
     const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
     if (startAtSnap.val()) {
       const rem = Math.ceil((startAtSnap.val() - now()) / 1000)
-      if (rem > 0 && rem <= TIMER_SEC + 5) { startCountdown(rem); return }
+      if (rem > 0 && rem <= MOBILE_TIMER_SEC + 5) { startCountdown(rem); return }
     }
-    const startAt = now() + TIMER_SEC * 1000
+    const startAt = now() + MOBILE_TIMER_SEC * 1000
     await update(ref(db), {
       'lobby/gameStartAt': startAt,
       'game/meta': {
@@ -363,10 +392,10 @@ export default function CartelaPage() {
         gameNum: gameNumRef.current,
         startTime: startAt,
         status: 'waiting',
-        prizePool: stateRef.current.prize
+        prizePool: currentPrize
       }
     })
-    startCountdown(TIMER_SEC)
+    startCountdown(MOBILE_TIMER_SEC)
   }
 
   function startCountdown(sec) {
@@ -387,12 +416,6 @@ export default function CartelaPage() {
 
   async function triggerGameStart() {
     if (stateRef.current.gameActive) return
-    const snap = await get(ref(db, 'lobby/players'))
-    if (snap.numChildren() < MIN_PLAYERS || !stateRef.current.joined) {
-      stopCountdown()
-      await remove(ref(db, 'lobby/gameStartAt')).catch(() => {})
-      return
-    }
     setGameActive(true)
     localStorage.setItem('prizePool',  stateRef.current.prize.toString())
     localStorage.setItem('numPlayers', stateRef.current.pCount.toString())
@@ -412,34 +435,48 @@ export default function CartelaPage() {
     stopCountdown()
   }
 
-  // ── Render Preparation ───────────────────────────────────
-  const cardIds = Object.keys(allCards).map(Number).sort((a, b) => a - b)
-
-  function cardClass(id) {
+  function getNumberStyles(id) {
     const { selectedCards: sc, taken: tk } = stateRef.current
-    const isMine      = sc.some(c => c.id === id)
-    const isMineOther = tk[id] && tk[id] === playerKey && !isMine
-    if (isMine) return 'nc selected'
-    if (isMineOther) return 'nc self-taken'
-    if (tk[id]) return 'nc taken'
-    if (gameActive) return 'nc locked'
-    return 'nc'
+    const isMine = sc.some(c => c.id === id)
+
+    const base = {
+      padding: '12px 0',
+      fontSize: '15px',
+      fontWeight: 'bold',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      border: 'none',
+      textAlign: 'center',
+      transition: 'all 0.1s linear'
+    }
+
+    if (isMine || (tk[id] && tk[id] === playerKey)) {
+      return { ...base, background: '#ffffff', color: '#111111', boxShadow: '0 0 8px rgba(255,255,255,0.6)' }
+    }
+    if (tk[id]) {
+      return { ...base, background: '#221414', color: '#ff4444', opacity: '0.3', cursor: 'not-allowed' }
+    }
+    if (gameActive) {
+      return { ...base, background: '#1a1a1a', color: '#444', cursor: 'not-allowed' }
+    }
+    return { ...base, background: '#333333', color: '#ffffff' }
   }
 
+  const numbersArray = Array.from({ length: 450 }, (_, i) => i + 1)
   const timerUrgent = cdSec !== null && cdSec <= 10
 
   return (
-    <>
+    <div style={{ background: '#000', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fff', overflow: 'hidden' }}>
       {loading && (
         <div className="loading-overlay">
           <div className="loader-box">
             <div className="spinner" />
-            <div className="loading-text">LOADING CARD DATABASE...</div>
+            <div className="loading-text">LOADING PLATFORM CORE DATA...</div>
           </div>
         </div>
       )}
 
-      <nav className="lobby-nav">
+      <nav className="lobby-nav" style={{ flexShrink: '0' }}>
         <div className="nav-group">
           <div className="profile-pill">
             <span className="lbl">{profileLbl}</span>
@@ -471,52 +508,80 @@ export default function CartelaPage() {
         </div>
       </nav>
 
-      <div className="lobby-scroll">
-        <div className="status-row">
+      <div className="lobby-scroll" style={{ flex: '1 1 auto', overflowY: 'auto', paddingBottom: '10px' }}>
+        <div className="status-row" style={{ padding: '6px 12px' }}>
           <div className={`badge${joined ? ' active' : ''}`}>
             👥 {pCount} Player{pCount !== 1 ? 's' : ''}
           </div>
           {wasDisconnected && joined && (
-            <div className="badge disconnected">📵 Reconnected — spot saved</div>
+            <div className="badge disconnected">% Reconnected — spot saved</div>
           )}
         </div>
 
-        {/* ── Updated Main Grid Content ── */}
-        <div className="num-grid">
-          {cardIds.map(id => (
-            <div
+        <div className="pure-number-grid" style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(10, 1fr)',
+          gap: '4px',
+          padding: '4px 8px'
+        }}>
+          {numbersArray.map(id => (
+            <button
               key={id}
-              className={cardClass(id)}
+              disabled={taken[id] && taken[id] !== playerKey}
+              style={getNumberStyles(id)}
               onClick={() => onCardTap(id)}
-              style={{ position: 'relative' }}
             >
-              {/* Renders the raw full interactive grid matrix inside the item box */}
-              <MiniCard id={id} data={allCards[id]} />
-            </div>
+              {id}
+            </button>
           ))}
         </div>
       </div>
 
-      {/* Footer Tracker panel showing what cards are currently purchased */}
-      <div className="lobby-panel">
-        <div className="mini-grid">
-          {selectedCards.length === 0
-            ? <span className="panel-empty">Tap any card template matrix above to select/buy</span>
-            : (
-              <div className="selected-summary-tray">
-                <h3>Your Active Cards ({selectedCards.length})</h3>
-                <div className="tray-row">
-                  {selectedCards.map(c => (
-                    <span key={c.id} className="tray-badge" onClick={() => onCardTap(c.id)}>
-                      Card #{c.id} <span className="remove-x">×</span>
-                    </span>
-                  ))}
-                </div>
+      <div className="lobby-panel" style={{ 
+        flexShrink: '0',
+        borderTop: '2px solid #222', 
+        background: '#0a0a0a',
+        padding: '12px',
+        maxHeight: '320px',
+        overflowY: 'auto'
+      }}>
+        {selectedCards.length === 0 ? (
+          <span style={{ display: 'block', padding: '15px', textAlign: 'center', color: '#555', fontSize: '14px' }}>
+            Select a card number above to view matrix grid and play
+          </span>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            {selectedCards.map(c => (
+              <div key={c.id} style={{ position: 'relative', width: '100%' }}>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCardTap(c.id);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: '6px',
+                    right: '12px',
+                    background: '#f44336',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    padding: '4px 10px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: 'bold',
+                    zIndex: '10',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.5)'
+                  }}
+                >
+                  REMOVE ×
+                </button>
+                <FullMobileCard id={c.id} data={allCards[c.id]} />
               </div>
-            )
-          }
-        </div>
+            ))}
+          </div>
+        )}
       </div>
-    </>
+    </div>
   )
 }
