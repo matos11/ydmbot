@@ -13,17 +13,13 @@ let svrOff = 0
 onValue(ref(db, '.info/serverTimeOffset'), s => { svrOff = s.val() || 0 })
 const now = () => Date.now() + svrOff
 
-// ── Added 100 Birr Starting Balance for Guests ───────────
+// ── Telegram-only session ────────────────────────────────
+// CartelaPage no longer creates guest accounts. By the time a user reaches
+// this page, SplashPage has already authenticated them via Telegram and
+// written `bingoUser` to localStorage. If that's missing, send them back
+// to the splash screen rather than silently spinning up a guest user.
 function getUser() {
   try { return JSON.parse(localStorage.getItem('bingoUser') || 'null') } catch { return null }
-}
-function ensureUser() {
-  let u = getUser()
-  if (!u) {
-    u = { name: 'Guest', phone: `guest_${Date.now()}`, telegram_id: null }
-    localStorage.setItem('bingoUser', JSON.stringify(u))
-  }
-  return u
 }
 
 function FullMobileCard({ data, id }) {
@@ -99,8 +95,14 @@ function FullMobileCard({ data, id }) {
 
 export default function CartelaPage() {
   const navigate = useNavigate()
-  const user = ensureUser()
-  const rawKey = (user.telegram_id || user.phone || '').toString()
+  const user = getUser()
+
+  // Guard: no authenticated Telegram session -> back to splash.
+  useEffect(() => {
+    if (!user) navigate('/', { replace: true })
+  }, [user, navigate])
+
+  const rawKey = (user?.telegram_id || user?.phone || '').toString()
   const playerKey = sanitizeKey(rawKey)
 
   // State
@@ -108,7 +110,7 @@ export default function CartelaPage() {
   const [taken, setTaken]                 = useState({})
   const [selectedCards, setSelectedCards] = useState([])
   const [bal, setBal]                     = useState(0)
-  const [profileName, setProfileName]     = useState(user.name || 'Player')
+  const [profileName, setProfileName]     = useState(user?.name || 'Player')
   const [profileLbl, setProfileLbl]       = useState('@player')
   const [pCount, setPCount]               = useState(0)
   const [joined, setJoined]               = useState(false)
@@ -118,6 +120,7 @@ export default function CartelaPage() {
   const [gameNum, setGameNum]             = useState('--')
   const [loading, setLoading]             = useState(true)
   const [wasDisconnected, setWasDisconnected] = useState(false)
+  const [waitingForPlayers, setWaitingForPlayers] = useState(false)
 
   const stateRef = useRef({})
   stateRef.current = { selectedCards, joined, gameActive, pCount, bal, taken, prize }
@@ -128,6 +131,7 @@ export default function CartelaPage() {
   const gameNumRef = useRef(1)
 
   useEffect(() => {
+    if (!user) return
     get(ref(db, 'cartelas'))
       .then(snap => {
         if (snap.exists()) {
@@ -142,22 +146,12 @@ export default function CartelaPage() {
         console.error("DB down:", err)
         setLoading(false)
       })
-  }, [])
+  }, [user])
 
   useEffect(() => {
-    // ── Pre-fill Guest Accounts with 100 Birr if balance doesn't exist ──
-    const userRef = ref(db, `users/${playerKey}`)
-    get(userRef).then(snap => {
-      if (!snap.exists() && playerKey.startsWith('guest_')) {
-        set(userRef, {
-          name: user.name,
-          phone: user.phone,
-          balance: 100, // 100 Birr Test Funding
-          createdAt: serverTimestamp()
-        })
-      }
-    })
+    if (!user || !playerKey) return
 
+    const userRef = ref(db, `users/${playerKey}`)
     const unsub1 = onValue(userRef, snap => {
       if (snap.exists()) {
         const u = snap.val()
@@ -172,13 +166,30 @@ export default function CartelaPage() {
       setTaken(snap.val() || {})
     })
 
-    // ── Derash calculation updated to multiply by number of players ──
+    // Derash calculation scales with number of joined players
     const playersRef = ref(db, 'lobby/players')
     const unsub3 = onValue(playersRef, snap => {
       const data = snap.val() || {}
       const activePlayerCount = Object.keys(data).length
       setPCount(activePlayerCount)
       setPrize(Math.floor(activePlayerCount * FEE * PAY))
+
+      // FIX: the countdown is only allowed to start once at least
+      // MIN_PLAYERS players have joined. Every time the live player count
+      // changes we re-evaluate this — previously the timer was kicked off
+      // by the FIRST joining player using a locally simulated count,
+      // independent of how many players had actually joined.
+      if (!stateRef.current.gameActive) {
+        if (activePlayerCount >= MIN_PLAYERS) {
+          setWaitingForPlayers(false)
+          checkAndStartTimer(Math.floor(activePlayerCount * FEE * PAY))
+        } else {
+          setWaitingForPlayers(stateRef.current.joined)
+          // Not enough players yet — make sure no stale countdown is running.
+          stopCountdown()
+          remove(ref(db, 'lobby/gameStartAt')).catch(() => {})
+        }
+      }
     })
 
     const gnRef = ref(db, 'lobby/currentGameNum')
@@ -213,11 +224,11 @@ export default function CartelaPage() {
     return () => {
       ;[unsub1, unsub2, unsub3, unsub4, unsub5, unsub6, unsub7].forEach(u => u())
     }
-  }, [playerKey, navigate])
+  }, [playerKey, navigate, user])
 
   useEffect(() => {
-    if (Object.keys(allCards).length === 0) return
-    
+    if (!user || Object.keys(allCards).length === 0) return
+
     async function restoreSession() {
       const snap = await get(ref(db, `lobby/players/${playerKey}`))
       if (!snap.exists()) return
@@ -235,13 +246,13 @@ export default function CartelaPage() {
       localStorage.setItem('currentGameId', gid)
       localStorage.setItem('currentGameNum', gameNumRef.current)
       saveLocal(nums, restored.map(c => c.data), stateRef.current.prize)
-      
+
       const presRef = ref(db, `lobby/presence/${playerKey}`)
       set(presRef, true)
       onDisconnect(presRef).remove()
     }
     restoreSession()
-  }, [allCards, playerKey])
+  }, [allCards, playerKey, user])
 
   async function getOrCreateGameId() {
     if (gameIdRef.current) return gameIdRef.current
@@ -305,8 +316,10 @@ export default function CartelaPage() {
       }
       updates[`lobby/playerCards/${playerKey}`] = { cardNumbers, cardsData, gameId: gameIdRef.current }
       await update(ref(db), updates)
-      
-      // Calculate real-time prize based on immediate state additions
+
+      // Real-time prize projection — actual gating of the timer happens in
+      // the lobby/players listener above, based on the live player count,
+      // not this client's local guess.
       const simulatedCount = stateRef.current.pCount === 0 ? 1 : stateRef.current.pCount
       const projectedPrize = Math.floor(simulatedCount * FEE * PAY)
 
@@ -315,9 +328,17 @@ export default function CartelaPage() {
       const presRef = ref(db, `lobby/presence/${playerKey}`)
       set(presRef, true)
       onDisconnect(presRef).remove()
-      
-      // Starts timer instantly for the 1st player
-      await checkAndStartTimer(projectedPrize)
+
+      // FIX: do not start the timer here unconditionally. Only attempt to
+      // start it if MIN_PLAYERS is already satisfied — otherwise show the
+      // "waiting for more players" state and let the lobby/players listener
+      // kick off the countdown the moment the threshold is reached.
+      if (simulatedCount >= MIN_PLAYERS) {
+        await checkAndStartTimer(projectedPrize)
+        setWaitingForPlayers(false)
+      } else {
+        setWaitingForPlayers(true)
+      }
     } catch (e) {
       console.error(e)
       setSelectedCards([])
@@ -339,6 +360,7 @@ export default function CartelaPage() {
         updates[`lobby/playerCards/${playerKey}`] = null
         updates[`lobby/presence/${playerKey}`]   = null
         setJoined(false)
+        setWaitingForPlayers(false)
         stopCountdown()
         await remove(ref(db, 'lobby/gameStartAt'))
       } else {
@@ -368,17 +390,19 @@ export default function CartelaPage() {
       return
     }
     if (sc.length >= MAX_CARDS) return
-    
+
     const newCard = { id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } }
     const newSelected = [...sc, newCard]
     setSelectedCards(newSelected)
     await joinWithCards(newSelected)
   }
 
-  // ── Modified checkAndStartTimer to accept current runtime prize pools ──
+  // ── Starts/refreshes the lobby countdown. Callers must ensure
+  // MIN_PLAYERS has already been reached before calling this. ──
   async function checkAndStartTimer(currentPrize) {
     if (stateRef.current.gameActive) return
-    
+    if (stateRef.current.pCount < MIN_PLAYERS) return
+
     const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
     if (startAtSnap.val()) {
       const rem = Math.ceil((startAtSnap.val() - now()) / 1000)
@@ -416,6 +440,10 @@ export default function CartelaPage() {
 
   async function triggerGameStart() {
     if (stateRef.current.gameActive) return
+    // Safety net: never actually flip into a started game with fewer than
+    // MIN_PLAYERS, even if a stale gameStartAt timestamp fires late.
+    if (stateRef.current.pCount < MIN_PLAYERS) { stopCountdown(); return }
+
     setGameActive(true)
     localStorage.setItem('prizePool',  stateRef.current.prize.toString())
     localStorage.setItem('numPlayers', stateRef.current.pCount.toString())
@@ -432,6 +460,7 @@ export default function CartelaPage() {
     setJoined(false)
     setGameActive(false)
     setWasDisconnected(false)
+    setWaitingForPlayers(false)
     stopCountdown()
   }
 
@@ -462,8 +491,11 @@ export default function CartelaPage() {
     return { ...base, background: '#333333', color: '#ffffff' }
   }
 
+  if (!user) return null // redirecting to splash
+
   const numbersArray = Array.from({ length: 450 }, (_, i) => i + 1)
   const timerUrgent = cdSec !== null && cdSec <= 10
+  const playersNeeded = Math.max(0, MIN_PLAYERS - pCount)
 
   return (
     <div style={{ background: '#000', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fff', overflow: 'hidden' }}>
@@ -515,6 +547,11 @@ export default function CartelaPage() {
           </div>
           {wasDisconnected && joined && (
             <div className="badge disconnected">% Reconnected — spot saved</div>
+          )}
+          {waitingForPlayers && cdSec === null && (
+            <div className="badge waiting">
+              ⏳ Waiting for {playersNeeded} more player{playersNeeded !== 1 ? 's' : ''} to start
+            </div>
           )}
         </div>
 
