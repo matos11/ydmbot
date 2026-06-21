@@ -331,45 +331,10 @@ export default function GamePage() {
     setCalledCount(`${newDrawn.length}/75`)
   }
 
-  // ── Apply a newly drawn number to UI ─────────────────────
-  const applyNumUI = useCallback((n, currentDrawn, currentMarked, currentAuto) => {
-    if (currentDrawn.includes(n)) return currentDrawn
-    const newDrawn = [...currentDrawn, n]
-    playNum(n, false) // mute flag handled at call site
-    updateHistFrom(newDrawn)
-    if (!isSpectator && !forceSpec && cards) {
-      const newMarked = currentMarked.map((ms, ci) => {
-        const card = cards[ci]
-        const cols = ['b','i','n','g','o']
-        const newMs = new Set(ms)
-        for (let r = 0; r < 5; r++) {
-          for (let c = 0; c < 5; c++) {
-            const idx = r * 5 + c
-            if (idx === 12) continue
-            const colArr = card[cols[c]]
-            const val    = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
-            if (val === n && currentAuto) newMs.add(idx)
-          }
-        }
-        return newMs
-      })
-      return { newDrawn, newMarked }
-    }
-    return { newDrawn, newMarked: currentMarked }
-  }, [cards, isSpectator, forceSpec])
-
   // ── Check win for a card ──────────────────────────────────
-  function checkWinFor(ci, ms, currentAutoMode) {
-    if (isSpectator || forceSpec || !gameActiveRef.current || gameEndedRef.current) return null
-    return PATTERNS.find(p => p.i.every(i => ms.has(i))) || null
-  }
-
-  function recomputeClaimReady(newMarked, currentAutoMode) {
+  function recomputeClaimReady(newMarked) {
     if (!cards) return
-    const newReady = newMarked.map((ms, ci) => {
-      const win = PATTERNS.find(p => p.i.every(i => ms.has(i)))
-      return !!win
-    })
+    const newReady = newMarked.map(ms => !!PATTERNS.find(p => p.i.every(i => ms.has(i))))
     setClaimReady(newReady)
     return newReady
   }
@@ -378,7 +343,6 @@ export default function GamePage() {
   function triggerAutoBingo(ci, win, newMarked) {
     if (autoTriggered.current[ci]) return
     autoTriggered.current[ci] = true
-    // Show blink
     setWinBlinks(prev => {
       const next = [...prev]
       next[ci] = win.i
@@ -407,7 +371,7 @@ export default function GamePage() {
         return newMs
       })
       markedSetsRef.current = next
-      recomputeClaimReady(next, autoModeRef.current)
+      recomputeClaimReady(next)
       persistState(drawnRef.current, next)
       return next
     })
@@ -472,7 +436,6 @@ export default function GamePage() {
         const cols = ['b','i','n','g','o']
         const newMs = new Set(ms)
         if (newAuto) {
-          // In auto mode, mark all drawn numbers
           for (let r = 0; r < 5; r++) {
             for (let c = 0; c < 5; c++) {
               const idx = r * 5 + c
@@ -486,8 +449,7 @@ export default function GamePage() {
         return newMs
       })
       markedSetsRef.current = next
-      recomputeClaimReady(next, newAuto)
-      // Check auto triggers
+      recomputeClaimReady(next)
       if (newAuto && gameActiveRef.current && !gameEndedRef.current) {
         next.forEach((ms, ci) => {
           if (!autoTriggered.current[ci]) {
@@ -543,6 +505,10 @@ export default function GamePage() {
     }, 1000)
   }
 
+  // Ref to always have latest prize in handleWinners closure
+  const overlayPrizeRef = useRef(prizeSaved)
+  useEffect(() => { overlayPrizeRef.current = currentPrize }, [currentPrize])
+
   // ── Handle winners ────────────────────────────────────────
   async function handleWinners(winnersMap) {
     if (overlayShownRef.current) return
@@ -558,13 +524,12 @@ export default function GamePage() {
     if (!wList.length) { safeRedirect(); return }
 
     const total    = wList.length
-    const prize    = parseInt(stakeAmt) // will be computed from takenCards; use currentPrize
     const myWins   = wList.filter(w => w.playerKey === playerKey)
     const iWon     = myWins.length > 0
     const split    = Math.floor(overlayPrizeRef.current / total)
     const myShare  = split * myWins.length
 
-    playWinnerSound(false) // always play for everyone
+    playWinnerSound(false)
 
     if (iWon) {
       try {
@@ -576,10 +541,6 @@ export default function GamePage() {
     setOverlayPrize(overlayPrizeRef.current)
     startOverlayCountdown()
   }
-
-  // Ref to always have latest prize in handleWinners closure
-  const overlayPrizeRef = useRef(prizeSaved)
-  useEffect(() => { overlayPrizeRef.current = currentPrize }, [currentPrize])
 
   // ── Host: generate next number ────────────────────────────
   async function genNextNumber() {
@@ -599,8 +560,20 @@ export default function GamePage() {
     })
   }
 
+  // FIX: centralized "start the draw loop if eligible" — called from every
+  // place that could flip either of the two preconditions (isHost, gameActive)
+  // so there is no ordering dependency between host-election and game-start.
+  function maybeStartGen() {
+    if (isHostRef.current && gameActiveRef.current && !gameEndedRef.current && !numIntervalRef.current) {
+      startGen()
+    }
+  }
+
   function startGen() {
     if (numIntervalRef.current) clearInterval(numIntervalRef.current)
+    // Draw immediately on start instead of waiting a full DRAW_INTERVAL,
+    // so the first number appears without a dead pause.
+    genNextNumber()
     numIntervalRef.current = setInterval(async () => {
       if (!gameActiveRef.current || gameEndedRef.current) {
         clearInterval(numIntervalRef.current); numIntervalRef.current = null; return
@@ -613,35 +586,30 @@ export default function GamePage() {
     }, DRAW_INTERVAL)
   }
 
-  async function tryHostClaim() {
-    const myId = playerKey || 'host_' + Date.now()
-    const claim = await runTransaction(ref(db, 'activeGame/hostLock'), c => c === null ? myId : undefined)
-    if (claim.committed) {
+  // FIX: single host-election path (the old code had two near-duplicate
+  // functions, tryHost + tryHostClaim, with slightly different behavior).
+  // This one always attempts the claim, and on success or on discovering
+  // we already are host, calls maybeStartGen() instead of re-checking
+  // gameStarted/gameActive inline (which is what caused the race).
+  async function claimHost() {
+    if (gameEndedRef.current) return
+    const myId = playerKey || ('host_' + Date.now())
+    const tx = await runTransaction(ref(db, 'activeGame/hostLock'), cur => cur === null ? myId : undefined)
+    if (tx.committed && tx.snapshot.val() === myId) {
       isHostRef.current = true
       await set(ref(db, 'activeGame/host'), myId)
       onDisconnect(ref(db, 'activeGame/hostLock')).remove()
       onDisconnect(ref(db, 'activeGame/host')).remove()
-      if (gameStartedRef.current && gameActiveRef.current) startGen()
+      maybeStartGen()
+      return
     }
-  }
-
-  async function tryHost() {
-    if (gameEndedRef.current) return
-    const myId = playerKey || 'host_' + Date.now()
-    runTransaction(ref(db, 'activeGame/hostLock'), cur => cur === null ? myId : undefined,
-      async (err, committed, snap) => {
-        if (committed && snap?.val() === myId) {
-          isHostRef.current = true
-          await set(ref(db, 'activeGame/host'), myId)
-          onDisconnect(ref(db, 'activeGame/hostLock')).remove()
-          onDisconnect(ref(db, 'activeGame/host')).remove()
-          if (gameStartedRef.current && gameActiveRef.current) startGen()
-        } else {
-          const hostSnap = await get(ref(db, 'activeGame/host'))
-          if (hostSnap.val() === myId) { isHostRef.current = true; if (gameStartedRef.current && gameActiveRef.current) startGen() }
-        }
-      }
-    )
+    // Someone else holds the lock — check if it's actually us from a
+    // previous claim (e.g. effect re-ran) so we don't orphan our own host status.
+    const hostSnap = await get(ref(db, 'activeGame/host'))
+    if (hostSnap.val() === myId) {
+      isHostRef.current = true
+      maybeStartGen()
+    }
   }
 
   async function endGame() {
@@ -662,14 +630,14 @@ export default function GamePage() {
       const card = cards[ci]
       const cols = ['b','i','n','g','o']
       const newMs = new Set(ms)
-      for (let r = 0; r < 5; r++) {
-        for (let c = 0; c < 5; c++) {
-          const idx = r * 5 + c
-          if (idx === 12) continue
-          const colArr = card[cols[c]]
-          const val    = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
-          if (currentDrawn.includes(val) && (currentAuto || newMs.has(idx))) {
-            if (currentAuto) newMs.add(idx)
+      if (currentAuto) {
+        for (let r = 0; r < 5; r++) {
+          for (let c = 0; c < 5; c++) {
+            const idx = r * 5 + c
+            if (idx === 12) continue
+            const colArr = card[cols[c]]
+            const val    = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
+            if (currentDrawn.includes(val)) newMs.add(idx)
           }
         }
       }
@@ -677,7 +645,7 @@ export default function GamePage() {
     })
     setMarkedSets(newMarked)
     markedSetsRef.current = newMarked
-    recomputeClaimReady(newMarked, currentAuto)
+    recomputeClaimReady(newMarked)
     return newMarked
   }
 
@@ -724,7 +692,8 @@ export default function GamePage() {
       const newMarked = reapplyToCards(newDrawn, markedSetsRef.current, autoModeRef.current)
       persistState(newDrawn, newMarked)
     }
-    if (gameActiveRef.current && !gameEndedRef.current && !isHostRef.current) await tryHostClaim()
+    if (gameActiveRef.current && !gameEndedRef.current && !isHostRef.current) await claimHost()
+    else maybeStartGen()
   }
 
   // ─────────────────────────────────────────────────────────
@@ -761,13 +730,32 @@ export default function GamePage() {
         }
       }
 
-      // Check game started
+      // FIX: treat `activeGame/started` as the single source of truth.
+      // Previously this page ALSO derived "started" independently from a
+      // live `lobby/players` count threshold, which could disagree with the
+      // lobby's own `game/status` flow and race against host election —
+      // that mismatch is what caused the draw loop to never start. The
+      // lobby (CartelaPage) is solely responsible for deciding when a round
+      // begins; this page only reacts to `activeGame/started`.
       const startedSnap = await get(ref(db, 'activeGame/started'))
       if (startedSnap.val() === true) {
         gameStartedRef.current = true
         gameActiveRef.current  = true
         setGameStarted(true)
         setGameActive(true)
+      } else {
+        // Fallback: if the lobby already flagged this round as started via
+        // game/status (set by CartelaPage's triggerGameStart) but
+        // activeGame/started hasn't been written yet, mirror it now so the
+        // host doesn't sit idle waiting on a flag nobody will set.
+        const statusSnap = await get(ref(db, 'game/status'))
+        if (statusSnap.val() === 'started') {
+          gameStartedRef.current = true
+          gameActiveRef.current = true
+          setGameStarted(true)
+          setGameActive(true)
+          await runTransaction(ref(db, 'activeGame/started'), cur => cur === true ? undefined : true)
+        }
       }
 
       // Check for existing winners
@@ -777,11 +765,6 @@ export default function GamePage() {
       if (unmounted) return
 
       // ── Attach realtime listeners ──────────────────────────
-      // New drawn numbers
-      const drawnRef2 = ref(db, 'activeGame/drawnNumbers')
-      onValue(drawnRef2, snap => {
-        if (gameEndedRef.current || !snap.exists()) return
-      })
 
       // child_added for live number drawing
       const unsubChildAdded = onChildAdded(ref(db, 'activeGame/drawnNumbers'), snap => {
@@ -813,7 +796,6 @@ export default function GamePage() {
               return newMs
             })
             markedSetsRef.current = next
-            // Check wins
             const newReady = next.map((ms, ci) => {
               if (autoTriggered.current[ci]) return true
               const win = PATTERNS.find(p => p.i.every(i => ms.has(i)))
@@ -847,24 +829,38 @@ export default function GamePage() {
         }
       })
 
-      // Started
+      // Started — FIX: this is now the ONLY place (besides the init fallback
+      // above) that flips gameActive/gameStarted to true. As soon as it does,
+      // it calls maybeStartGen(), which is safe to call regardless of
+      // whether host election has already completed or not, because
+      // claimHost() ALSO calls maybeStartGen() after winning the lock.
+      // Whichever of the two (host election, started-flag) resolves last is
+      // the one that actually kicks off the draw loop — no more race.
       const unsubStarted = onValue(ref(db, 'activeGame/started'), snap => {
         if (snap.val() === true && !gameStartedRef.current) {
           gameStartedRef.current = true; gameActiveRef.current = true
           setGameStarted(true); setGameActive(true)
-          if (isHostRef.current && !numIntervalRef.current) startGen()
+        }
+        if (snap.val() === true) maybeStartGen()
+      })
+
+      // Mirror game/status -> activeGame/started in case CartelaPage's
+      // lobby flow sets the former before this page's listener above is
+      // attached (covered by the init() fallback too, but this also
+      // catches the case where the status flips WHILE this page is open,
+      // e.g. spectators who joined mid-lobby).
+      const unsubStatus = onValue(ref(db, 'game/status'), async snap => {
+        if (snap.val() === 'started' && !gameStartedRef.current) {
+          gameStartedRef.current = true; gameActiveRef.current = true
+          setGameStarted(true); setGameActive(true)
+          await runTransaction(ref(db, 'activeGame/started'), cur => cur === true ? undefined : true)
+          maybeStartGen()
         }
       })
 
-      // Player count
+      // Player count (display only — no longer drives game-start decisions)
       const unsubPlayers = onValue(ref(db, 'lobby/players'), snap => {
-        const count = snap.numChildren()
-        setPlayerCount(count)
-        if (!gameStartedRef.current && count >= MIN_PLAYERS) {
-          gameActiveRef.current = true; gameStartedRef.current = true
-          setGameActive(true); setGameStarted(true)
-          runTransaction(ref(db, 'activeGame/started'), cur => cur === true ? undefined : true)
-        }
+        setPlayerCount(snap.numChildren())
       })
 
       // Prize sync
@@ -878,12 +874,12 @@ export default function GamePage() {
       // Host lock failover
       const unsubHostLock = onValue(ref(db, 'activeGame/hostLock'), async snap => {
         if (!snap.exists() && !isHostRef.current && gameActiveRef.current && !gameEndedRef.current) {
-          await tryHostClaim()
+          await claimHost()
         }
       })
 
       setupConnectionMonitor()
-      await tryHost()
+      await claimHost()
 
       // Cleanup on unmount
       return () => {
@@ -892,6 +888,7 @@ export default function GamePage() {
         unsubWinners()
         unsubEnded()
         unsubStarted()
+        unsubStatus()
         unsubPlayers()
         unsubTaken()
         unsubHostLock()
@@ -900,19 +897,11 @@ export default function GamePage() {
       }
     }
 
-    const cleanup = init()
-    return () => { unmounted = true; cleanup.then(fn => fn && fn()) }
+    const cleanupPromise = init()
+    return () => { unmounted = true; cleanupPromise.then(fn => fn && fn()) }
   }, [])
 
   // ── Board cells ───────────────────────────────────────────
-  const boardCells = []
-  for (let i = 1; i <= 75; i++) {
-    const cls = drawnRef.current.includes(i)
-      ? `bnum ${colClass(i)}`
-      : 'bnum'
-    boardCells.push(<div key={i} id={`b${i}`} className={cls}>{i}</div>)
-  }
-  // Use drawn state for rendering
   const boardCellsRendered = []
   for (let i = 1; i <= 75; i++) {
     const isDrawn = drawn.includes(i)
