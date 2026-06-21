@@ -58,9 +58,13 @@ export default function SplashPage() {
     setStatusText('Checking your account...')
 
     try {
-      const { isNew } = await syncTelegramUser(tgUser)
-      persistSession(tgUser)
-      setStatusText(isNew ? 'Welcome to YDM Bingo!' : `Welcome back, ${tgUser.name}!`)
+      // Synchronize with Firebase and unpack BOTH the novelty flag and the true database profile
+      const { isNew, userData } = await syncTelegramUser(tgUser)
+      
+      // Store the official Firebase-backed dataset (maintains correct balance/fields)
+      persistSession(userData)
+      
+      setStatusText(isNew ? 'Welcome to YDM Bingo!' : `Welcome back, ${userData.name || tgUser.name}!`)
       await finishAndGo('/cartela')
     } catch (e) {
       console.error('Telegram auth sync failed:', e)
