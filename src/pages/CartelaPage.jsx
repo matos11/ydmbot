@@ -13,40 +13,55 @@ let svrOff = 0
 onValue(ref(db, '.info/serverTimeOffset'), s => { svrOff = s.val() || 0 })
 const now = () => Date.now() + svrOff
 
-// ── Telegram-only session ────────────────────────────────
-// CartelaPage no longer creates guest accounts. By the time a user reaches
-// this page, SplashPage has already authenticated them via Telegram and
-// written `bingoUser` to localStorage. If that's missing, send them back
-// to the splash screen rather than silently spinning up a guest user.
 function getUser() {
   try { return JSON.parse(localStorage.getItem('bingoUser') || 'null') } catch { return null }
 }
 
+/**
+ * Modernized, Compact Card Preview component
+ */
 function FullMobileCard({ data, id }) {
-  if (!data) return <div style={{ color: '#fff', padding: '15px', textAlign: 'center' }}>Loading Matrix...</div>
+  if (!data) return <div style={{ color: '#aaa', padding: '10px', textAlign: 'center', fontSize: '12px' }}>Loading Matrix...</div>
   const cols = ['b', 'i', 'n', 'g', 'o']
   return (
-    <div style={{ width: '100%', background: '#161616', borderRadius: '8px', padding: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
-      <div style={{ color: '#4caf50', fontWeight: 'bold', fontSize: '16px', marginBottom: '8px', textAlign: 'center', letterSpacing: '1px' }}>
-        CARD NUMBER: {id}
+    <div style={{ 
+      width: '100%', 
+      background: 'rgba(25, 25, 25, 0.65)', 
+      backdropFilter: 'blur(8px)',
+      borderRadius: '12px', 
+      padding: '8px', 
+      border: '1px solid rgba(255, 255, 255, 0.08)',
+      boxShadow: '0 4px 20px rgba(0,0,0,0.4)' 
+    }}>
+      <div style={{ 
+        color: '#4ade80', 
+        fontWeight: '800', 
+        fontSize: '11px', 
+        marginBottom: '6px', 
+        textAlign: 'center', 
+        letterSpacing: '0.5px' 
+      }}>
+        CARD #{id}
       </div>
       <table style={{ 
         width: '100%', 
-        borderCollapse: 'collapse', 
-        fontSize: '15px', 
+        borderCollapse: 'separate',
+        borderSpacing: '2px',
+        fontSize: '11px', 
         color: '#fff', 
         textAlign: 'center',
-        fontWeight: 'bold'
+        fontWeight: '700'
       }}>
         <thead>
-          <tr style={{ background: '#222' }}>
+          <tr>
             {cols.map(l => (
               <th key={l} style={{ 
-                padding: '8px 0', 
-                border: '1px solid #333', 
+                padding: '3px 0', 
                 textTransform: 'uppercase', 
-                color: l === 'n' ? '#ffeb3b' : '#4caf50',
-                fontSize: '16px'
+                color: l === 'n' ? '#facc15' : '#4ade80',
+                fontSize: '12px',
+                background: 'rgba(255,255,255,0.03)',
+                borderRadius: '4px'
               }}>{l}</th>
             ))}
           </tr>
@@ -58,11 +73,11 @@ function FullMobileCard({ data, id }) {
                 if (c === 2 && r === 2) {
                   return (
                     <td key={c} style={{ 
-                      border: '1px solid #333', 
-                      background: '#e91e63', 
+                      background: '#ec4899', 
                       color: '#fff', 
-                      fontSize: '18px',
-                      padding: '10px 0' 
+                      fontSize: '12px',
+                      borderRadius: '4px',
+                      padding: '5px 0' 
                     }}>★</td>
                   )
                 }
@@ -76,10 +91,10 @@ function FullMobileCard({ data, id }) {
                 }
                 return (
                   <td key={c} style={{ 
-                    border: '1px solid #333', 
-                    padding: '10px 0', 
-                    background: '#242424',
-                    textShadow: '0 1px 2px rgba(0,0,0,0.8)'
+                    padding: '5px 0', 
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    borderRadius: '4px',
+                    color: '#e2e8f0'
                   }}>
                     {v}
                   </td>
@@ -97,7 +112,6 @@ export default function CartelaPage() {
   const navigate = useNavigate()
   const user = getUser()
 
-  // Guard: no authenticated Telegram session -> back to splash.
   useEffect(() => {
     if (!user) navigate('/', { replace: true })
   }, [user, navigate])
@@ -166,7 +180,6 @@ export default function CartelaPage() {
       setTaken(snap.val() || {})
     })
 
-    // Derash calculation scales with number of joined players
     const playersRef = ref(db, 'lobby/players')
     const unsub3 = onValue(playersRef, snap => {
       const data = snap.val() || {}
@@ -174,18 +187,12 @@ export default function CartelaPage() {
       setPCount(activePlayerCount)
       setPrize(Math.floor(activePlayerCount * FEE * PAY))
 
-      // FIX: the countdown is only allowed to start once at least
-      // MIN_PLAYERS players have joined. Every time the live player count
-      // changes we re-evaluate this — previously the timer was kicked off
-      // by the FIRST joining player using a locally simulated count,
-      // independent of how many players had actually joined.
       if (!stateRef.current.gameActive) {
         if (activePlayerCount >= MIN_PLAYERS) {
           setWaitingForPlayers(false)
           checkAndStartTimer(Math.floor(activePlayerCount * FEE * PAY))
         } else {
           setWaitingForPlayers(stateRef.current.joined)
-          // Not enough players yet — make sure no stale countdown is running.
           stopCountdown()
           remove(ref(db, 'lobby/gameStartAt')).catch(() => {})
         }
@@ -317,9 +324,6 @@ export default function CartelaPage() {
       updates[`lobby/playerCards/${playerKey}`] = { cardNumbers, cardsData, gameId: gameIdRef.current }
       await update(ref(db), updates)
 
-      // Real-time prize projection — actual gating of the timer happens in
-      // the lobby/players listener above, based on the live player count,
-      // not this client's local guess.
       const simulatedCount = stateRef.current.pCount === 0 ? 1 : stateRef.current.pCount
       const projectedPrize = Math.floor(simulatedCount * FEE * PAY)
 
@@ -329,10 +333,6 @@ export default function CartelaPage() {
       set(presRef, true)
       onDisconnect(presRef).remove()
 
-      // FIX: do not start the timer here unconditionally. Only attempt to
-      // start it if MIN_PLAYERS is already satisfied — otherwise show the
-      // "waiting for more players" state and let the lobby/players listener
-      // kick off the countdown the moment the threshold is reached.
       if (simulatedCount >= MIN_PLAYERS) {
         await checkAndStartTimer(projectedPrize)
         setWaitingForPlayers(false)
@@ -397,8 +397,6 @@ export default function CartelaPage() {
     await joinWithCards(newSelected)
   }
 
-  // ── Starts/refreshes the lobby countdown. Callers must ensure
-  // MIN_PLAYERS has already been reached before calling this. ──
   async function checkAndStartTimer(currentPrize) {
     if (stateRef.current.gameActive) return
     if (stateRef.current.pCount < MIN_PLAYERS) return
@@ -440,8 +438,6 @@ export default function CartelaPage() {
 
   async function triggerGameStart() {
     if (stateRef.current.gameActive) return
-    // Safety net: never actually flip into a started game with fewer than
-    // MIN_PLAYERS, even if a stale gameStartAt timestamp fires late.
     if (stateRef.current.pCount < MIN_PLAYERS) { stopCountdown(); return }
 
     setGameActive(true)
@@ -469,97 +465,139 @@ export default function CartelaPage() {
     const isMine = sc.some(c => c.id === id)
 
     const base = {
-      padding: '12px 0',
-      fontSize: '15px',
-      fontWeight: 'bold',
-      borderRadius: '4px',
+      padding: '10px 0',
+      fontSize: '13px',
+      fontWeight: '800',
+      borderRadius: '8px',
       cursor: 'pointer',
-      border: 'none',
+      border: '1px solid transparent',
       textAlign: 'center',
-      transition: 'all 0.1s linear'
+      transition: 'all 0.15s ease'
     }
 
     if (isMine || (tk[id] && tk[id] === playerKey)) {
-      return { ...base, background: '#ffffff', color: '#111111', boxShadow: '0 0 8px rgba(255,255,255,0.6)' }
+      return { 
+        ...base, 
+        background: '#ffffff', 
+        color: '#0a0a0a', 
+        borderColor: '#4ade80',
+        boxShadow: '0 0 12px rgba(74, 222, 128, 0.5)' 
+      }
     }
     if (tk[id]) {
-      return { ...base, background: '#221414', color: '#ff4444', opacity: '0.3', cursor: 'not-allowed' }
+      return { ...base, background: '#1e1111', color: '#ef4444', opacity: '0.25', cursor: 'not-allowed' }
     }
     if (gameActive) {
-      return { ...base, background: '#1a1a1a', color: '#444', cursor: 'not-allowed' }
+      return { ...base, background: '#141414', color: '#444', cursor: 'not-allowed' }
     }
-    return { ...base, background: '#333333', color: '#ffffff' }
+    return { 
+      ...base, 
+      background: 'rgba(255,255,255,0.04)', 
+      color: '#cbd5e1', 
+      borderColor: 'rgba(255,255,255,0.05)',
+      ':hover': { background: 'rgba(255,255,255,0.1)' }
+    }
   }
 
-  if (!user) return null // redirecting to splash
+  if (!user) return null
 
   const numbersArray = Array.from({ length: 450 }, (_, i) => i + 1)
   const timerUrgent = cdSec !== null && cdSec <= 10
   const playersNeeded = Math.max(0, MIN_PLAYERS - pCount)
 
   return (
-    <div style={{ background: '#000', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fff', overflow: 'hidden' }}>
+    <div style={{ background: '#09090b', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fafafa', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+      
       {loading && (
-        <div className="loading-overlay">
-          <div className="loader-box">
-            <div className="spinner" />
-            <div className="loading-text">LOADING PLATFORM CORE DATA...</div>
+        <div className="loading-overlay" style={{ background: 'rgba(9,9,11,0.95)', position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="loader-box" style={{ textAlign: 'center' }}>
+            <div className="spinner" style={{ width: '40px', height: '40px', border: '3px solid rgba(255,255,255,0.1)', borderTopColor: '#4ade80', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 12px' }} />
+            <div style={{ fontSize: '11px', letterSpacing: '1px', color: '#a1a1aa' }}>LOADING PLATFORM CORE DATA...</div>
           </div>
         </div>
       )}
 
-      <nav className="lobby-nav" style={{ flexShrink: '0' }}>
-        <div className="nav-group">
-          <div className="profile-pill">
-            <span className="lbl">{profileLbl}</span>
-            <span className="val">{profileName}</span>
+      {/* Modern High-Contrast Dynamic Top Bar */}
+      <nav style={{ 
+        flexShrink: 0, 
+        background: 'rgba(18, 18, 24, 0.8)', 
+        backdropFilter: 'blur(12px)',
+        borderBottom: '1px solid rgba(255,255,255,0.06)', 
+        padding: '10px 14px', 
+        display: 'flex', 
+        flexDirection: 'column', 
+        gap: '8px' 
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 8px #4ade80' }} />
+            <span style={{ fontSize: '14px', fontWeight: '800', letterSpacing: '0.5px' }}>{profileName}</span>
+            <span style={{ fontSize: '11px', color: '#71717a' }}>{profileLbl}</span>
           </div>
-          <div className="chip g">
-            <span className="lbl">Balance</span>
-            <span className="val">{Number(bal).toFixed(2)}</span>
+          
+          <div style={{ background: 'rgba(74, 222, 128, 0.1)', border: '1px solid rgba(74, 222, 128, 0.2)', borderRadius: '20px', padding: '4px 12px', fontSize: '13px', fontWeight: '800', color: '#4ade80' }}>
+            {Number(bal).toFixed(2)} <span style={{ fontSize: '10px', fontWeight: '500' }}>ETB</span>
           </div>
         </div>
-        <div className="nav-group">
-          <div className="chip">
-            <span className="lbl">Stake</span>
-            <span className="val">{FEE}</span>
+
+        <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px' }}>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '4px 10px', display: 'flex', flexDirection: 'column', minWidth: '60px' }}>
+            <span style={{ fontSize: '9px', color: '#71717a', textTransform: 'uppercase' }}>Stake</span>
+            <span style={{ fontSize: '12px', fontWeight: '700' }}>{FEE}</span>
           </div>
-          <div className="chip au">
-            <span className="lbl">Derash</span>
-            <span className="val">{prize}</span>
+          <div style={{ background: 'rgba(234, 179, 8, 0.05)', border: '1px solid rgba(234, 179, 8, 0.15)', borderRadius: '8px', padding: '4px 10px', display: 'flex', flexDirection: 'column', minWidth: '75px' }}>
+            <span style={{ fontSize: '9px', color: '#eab308', textTransform: 'uppercase' }}>Derash</span>
+            <span style={{ fontSize: '12px', fontWeight: '800', color: '#eab308' }}>{prize}</span>
           </div>
-          <div className="chip bl">
-            <span className="lbl">Game</span>
-            <span className="val">{gameNum}</span>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '4px 10px', display: 'flex', flexDirection: 'column', minWidth: '60px' }}>
+            <span style={{ fontSize: '9px', color: '#71717a', textTransform: 'uppercase' }}>Game</span>
+            <span style={{ fontSize: '12px', fontWeight: '700', color: '#38bdf8' }}>#{gameNum}</span>
           </div>
-          <div className="timer-pill">
-            <span className={timerUrgent ? 'urgent' : ''}>
+          
+          {/* Neon Countdown Pill */}
+          <div style={{ 
+            marginLeft: 'auto',
+            background: timerUrgent ? 'rgba(239, 68, 68, 0.15)' : 'rgba(255,255,255,0.03)', 
+            border: timerUrgent ? '1px solid #ef4444' : '1px solid rgba(255,255,255,0.05)', 
+            borderRadius: '8px', 
+            padding: '4px 14px', 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            minWidth: '50px',
+            boxShadow: timerUrgent ? '0 0 10px rgba(239, 68, 68, 0.3)' : 'none'
+          }}>
+            <span style={{ fontSize: '14px', fontWeight: '900', color: timerUrgent ? '#ef4444' : '#fafafa' }}>
               {cdSec !== null ? `${cdSec}s` : '--'}
             </span>
           </div>
         </div>
       </nav>
 
-      <div className="lobby-scroll" style={{ flex: '1 1 auto', overflowY: 'auto', paddingBottom: '10px' }}>
-        <div className="status-row" style={{ padding: '6px 12px' }}>
-          <div className={`badge${joined ? ' active' : ''}`}>
-            👥 {pCount} Player{pCount !== 1 ? 's' : ''}
+      {/* Main Grid Viewport Container */}
+      <div className="lobby-scroll" style={{ flex: '1 1 auto', overflowY: 'auto', padding: '12px 8px' }}>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '10px', padding: '0 4px' }}>
+          <div style={{ background: 'rgba(56, 189, 248, 0.1)', border: '1px solid rgba(56, 189, 248, 0.2)', color: '#38bdf8', fontSize: '11px', fontWeight: '700', padding: '3px 8px', borderRadius: '6px' }}>
+            👥 {pCount} Active
           </div>
           {wasDisconnected && joined && (
-            <div className="badge disconnected">% Reconnected — spot saved</div>
+            <div style={{ background: '#ca8a04', color: '#fff', fontSize: '11px', fontWeight: '700', padding: '3px 8px', borderRadius: '6px' }}>✓ Reconnected</div>
           )}
           {waitingForPlayers && cdSec === null && (
-            <div className="badge waiting">
-              ⏳ Waiting for {playersNeeded} more player{playersNeeded !== 1 ? 's' : ''} to start
+            <div style={{ color: '#a1a1aa', fontSize: '11px', fontWeight: '500', marginLeft: 'auto' }}>
+              ⏳ Need {playersNeeded} more to start
             </div>
           )}
         </div>
 
-        <div className="pure-number-grid" style={{
+        <div style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(10, 1fr)',
-          gap: '4px',
-          padding: '4px 8px'
+          gap: '5px',
+          background: 'rgba(255,255,255,0.01)',
+          padding: '8px',
+          borderRadius: '12px',
+          border: '1px solid rgba(255,255,255,0.03)'
         }}>
           {numbersArray.map(id => (
             <button
@@ -574,22 +612,34 @@ export default function CartelaPage() {
         </div>
       </div>
 
-      <div className="lobby-panel" style={{ 
-        flexShrink: '0',
-        borderTop: '2px solid #222', 
-        background: '#0a0a0a',
-        padding: '12px',
-        maxHeight: '320px',
-        overflowY: 'auto'
+      {/* Bottom Panel - Sleek side-by-side card drawer */}
+      <div style={{ 
+        flexShrink: 0,
+        borderTop: '1px solid rgba(255,255,255,0.08)', 
+        background: 'linear-gradient(to top, #040406, #0c0c0e)',
+        padding: '12px 14px 20px',
+        maxHeight: '260px'
       }}>
         {selectedCards.length === 0 ? (
-          <span style={{ display: 'block', padding: '15px', textAlign: 'center', color: '#555', fontSize: '14px' }}>
-            Select a card number above to view matrix grid and play
+          <span style={{ display: 'block', padding: '30px 15px', textAlign: 'center', color: '#52525b', fontSize: '12px', fontWeight: '500', letterSpacing: '0.2px' }}>
+            Tap an available card number above to purchase and preview matrix
           </span>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          /* Multi-card slider viewport layout */
+          <div style={{ 
+            display: 'flex', 
+            gap: '12px', 
+            overflowX: 'auto', 
+            paddingBottom: '4px',
+            scrollSnapType: 'x mandatory'
+          }}>
             {selectedCards.map(c => (
-              <div key={c.id} style={{ position: 'relative', width: '100%' }}>
+              <div key={c.id} style={{ 
+                position: 'relative', 
+                flex: selectedCards.length > 1 ? '0 0 75%' : '1 1 100%', 
+                maxWidth: selectedCards.length > 1 ? '240px' : '100%',
+                scrollSnapAlign: 'start'
+              }}>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -597,21 +647,22 @@ export default function CartelaPage() {
                   }}
                   style={{
                     position: 'absolute',
-                    top: '6px',
+                    top: '12px',
                     right: '12px',
-                    background: '#f44336',
+                    background: 'rgba(239, 68, 68, 0.9)',
+                    backdropFilter: 'blur(4px)',
                     color: 'white',
                     border: 'none',
-                    borderRadius: '4px',
-                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    padding: '2px 8px',
                     cursor: 'pointer',
-                    fontSize: '13px',
-                    fontWeight: 'bold',
+                    fontSize: '9px',
+                    fontWeight: '800',
                     zIndex: '10',
-                    boxShadow: '0 2px 4px rgba(0,0,0,0.5)'
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.4)'
                   }}
                 >
-                  REMOVE ×
+                  REMOVE
                 </button>
                 <FullMobileCard id={c.id} data={allCards[c.id]} />
               </div>
