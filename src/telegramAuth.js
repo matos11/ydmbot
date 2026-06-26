@@ -6,27 +6,30 @@ const STARTING_BALANCE = 100 // birr granted to brand new accounts
 
 /**
  * Returns the raw Telegram WebApp object if the app is actually running
- * inside Telegram, otherwise null. We check for initDataUnsafe.user because
- * Telegram.WebApp can technically exist on window in odd embedding cases
- * without real init data behind it.
+ * inside Telegram, otherwise null.
  */
 export function getTelegramWebApp() {
+  // Defensive check for Server-Side Rendering (SSR) or non-browser environments
+  if (typeof window === 'undefined') return null
+
   const tg = window.Telegram?.WebApp
-  if (!tg || !tg.initDataUnsafe || !tg.initDataUnsafe.user) return null
+  
+  // Ensure the WebApp SDK is loaded and initData contains valid user data
+  if (!tg || !tg.initDataUnsafe || !tg.initDataUnsafe.user) {
+    console.warn("Telegram WebApp context not found. Ensure the SDK script is loaded and opened inside Telegram via a WebApp button.")
+    return null
+  }
+  
   return tg
 }
 
 /**
- * Reads the Telegram user out of initDataUnsafe. This is fine for display
- * purposes (name, username, photo) immediately on load. It is NOT
- * cryptographically verified on the client — verification of `initData`
- * (the signed string) must happen server-side / in a Cloud Function before
- * you trust it for anything money-sensitive. We still gate balance writes
- * through Firebase transactions server-side rules, same as before.
+ * Reads the Telegram user out of initDataUnsafe for immediate display purposes.
  */
 export function getTelegramUser() {
   const tg = getTelegramWebApp()
   if (!tg) return null
+  
   const u = tg.initDataUnsafe.user
   return {
     telegram_id: u.id,
@@ -40,26 +43,38 @@ export function getTelegramUser() {
 
 /**
  * Looks up (or creates) the Firebase user record for this Telegram identity.
- * Returns { playerKey, isNew, userData }.
+ * Merges fresh Telegram metadata with persistent server fields (like balance and phone).
  */
 export async function syncTelegramUser(tgUser) {
+  if (!tgUser) return null
+
   const playerKey = sanitizeKey(String(tgUser.telegram_id))
   const userRef = ref(db, `users/${playerKey}`)
   const snap = await get(userRef)
 
   if (snap.exists()) {
     const existing = snap.val()
-    // Keep profile fields fresh (name/username/photo can change in Telegram)
-    await update(userRef, {
-      first_name: tgUser.first_name,
-      last_name: tgUser.last_name,
-      username: tgUser.username,
-      photo_url: tgUser.photo_url,
+    
+    // Updates profile metadata while preserving critical server-side fields like balance
+    const updatedFields = {
+      first_name: tgUser.first_name || existing.first_name || '',
+      last_name: tgUser.last_name || existing.last_name || '',
+      username: tgUser.username || existing.username || '',
+      photo_url: tgUser.photo_url || existing.photo_url || '',
       lastSeen: serverTimestamp()
-    })
-    return { playerKey, isNew: false, userData: existing }
+    }
+    
+    await update(userRef, updatedFields)
+    
+    // Return the fresh combination of persistent DB fields + updated metadata
+    return { 
+      playerKey, 
+      isNew: false, 
+      userData: { ...existing, ...updatedFields } 
+    }
   }
 
+  // Create a brand new record if user doesn't exist in the database
   const newUser = {
     name: tgUser.name,
     first_name: tgUser.first_name,
@@ -72,20 +87,26 @@ export async function syncTelegramUser(tgUser) {
     createdAt: serverTimestamp(),
     lastSeen: serverTimestamp()
   }
+  
   await set(userRef, newUser)
   return { playerKey, isNew: true, userData: newUser }
 }
 
 /**
- * Persists the session the rest of the app already expects in localStorage
- * (CartelaPage / GamePage read `bingoUser` from there).
+ * Persists the session in localStorage using the authoritative data 
+ * retrieved from the Firebase Database instead of relying purely on Telegram metadata.
  */
-export function persistSession(tgUser) {
+export function persistSession(dbUserData) {
+  if (!dbUserData) return
+
+  const fallbackName = [dbUserData.first_name, dbUserData.last_name].filter(Boolean).join(' ') || dbUserData.username || 'Player'
+  
   localStorage.setItem('bingoUser', JSON.stringify({
-    name: tgUser.name,
-    phone: '', // Telegram users are keyed by telegram_id, not phone
-    telegram_id: tgUser.telegram_id,
-    username: tgUser.username,
-    photo_url: tgUser.photo_url
+    name: dbUserData.name || fallbackName,
+    phone: dbUserData.phone || '', 
+    telegram_id: dbUserData.telegram_id,
+    username: dbUserData.username || '',
+    photo_url: dbUserData.photo_url || '',
+    balance: dbUserData.balance ?? STARTING_BALANCE // Standardizes fallback balance injection
   }))
 }
