@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { db } from '../firebase.js'
 import {
@@ -18,51 +18,65 @@ function getUser() {
 }
 
 /**
- * Modernized, Compact Card Preview component
+ * Super Ultra-Compact Mini Card Viewport
+ * Drastically drops DOM element counts and node depth for performance.
  */
-function FullMobileCard({ data, id }) {
-  if (!data) return <div style={{ color: '#aaa', padding: '10px', textAlign: 'center', fontSize: '12px' }}>Loading Matrix...</div>
+function MiniMobileCard({ data, id, onRemove }) {
+  if (!data) return <div style={{ color: '#aaa', padding: '4px', textAlign: 'center', fontSize: '10px' }}>...</div>
   const cols = ['b', 'i', 'n', 'g', 'o']
   return (
     <div style={{ 
-      width: '100%', 
-      background: 'rgba(25, 25, 25, 0.65)', 
-      backdropFilter: 'blur(8px)',
-      borderRadius: '12px', 
-      padding: '8px', 
-      border: '1px solid rgba(255, 255, 255, 0.08)',
-      boxShadow: '0 4px 20px rgba(0,0,0,0.4)' 
+      background: 'rgba(20, 20, 25, 0.85)', 
+      backdropFilter: 'blur(6px)',
+      borderRadius: '8px', 
+      padding: '6px', 
+      border: '1px solid rgba(255, 255, 255, 0.06)',
+      position: 'relative'
     }}>
-      <div style={{ 
-        color: '#4ade80', 
-        fontWeight: '800', 
-        fontSize: '11px', 
-        marginBottom: '6px', 
-        textAlign: 'center', 
-        letterSpacing: '0.5px' 
-      }}>
-        CARD #{id}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+        <span style={{ color: '#4ade80', fontWeight: '800', fontSize: '10px' }}>#{id}</span>
+        <button 
+          onClick={(e) => { e.stopPropagation(); onRemove(id); }}
+          style={{ background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', border: 'none', borderRadius: '4px', padding: '1px 4px', fontSize: '8px', fontWeight: 'bold', cursor: 'pointer' }}
+        >
+          ✕
+        </button>
       </div>
-      <table style={{ 
-        width: '100%', 
-        borderCollapse: 'separate',
-        borderSpacing: '2px',
-        fontSize: '11px', 
-        color: '#fff', 
-        textAlign: 'center',
-        fontWeight: '700'
-      }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '1px', background: 'rgba(255,255,255,0.02)', padding: '2px', borderRadius: '4px' }}>
+        {cols.map((col, c) => {
+          const colData = data[col] || data[col.toUpperCase()] || [];
+          return Array.from({ length: 5 }, (_, r) => {
+            if (c === 2 && r === 2) {
+              return <div key={`${c}-${r}`} style={{ background: '#ec4899', color: '#fff', fontSize: '8px', textAlign: 'center', borderRadius: '1px' }}>★</div>
+            }
+            const targetIdx = (c === 2 && r > 2) ? r - 1 : r;
+            const val = colData[targetIdx] ?? '';
+            return (
+              <div key={`${c}-${r}`} style={{ color: '#e2e8f0', fontSize: '8px', textAlign: 'center', background: 'rgba(255,255,255,0.03)', padding: '1px 0', borderRadius: '1px' }}>
+                {val}
+              </div>
+            );
+          });
+        })}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Standard Compact Matrix Viewport (Fallback when only 1 selection exists)
+ */
+function FullMobileCard({ data, id }) {
+  if (!data) return <div style={{ color: '#aaa', padding: '6px', textAlign: 'center', fontSize: '11px' }}>Loading Matrix...</div>
+  const cols = ['b', 'i', 'n', 'g', 'o']
+  return (
+    <div style={{ width: '100%', background: 'rgba(25, 25, 25, 0.65)', backdropFilter: 'blur(8px)', borderRadius: '12px', padding: '8px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+      <div style={{ color: '#4ade80', fontWeight: '800', fontSize: '11px', marginBottom: '6px', textAlign: 'center' }}>CARD #{id}</div>
+      <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '2px', fontSize: '11px', color: '#fff', textAlign: 'center', fontWeight: '700' }}>
         <thead>
           <tr>
             {cols.map(l => (
-              <th key={l} style={{ 
-                padding: '3px 0', 
-                textTransform: 'uppercase', 
-                color: l === 'n' ? '#facc15' : '#4ade80',
-                fontSize: '12px',
-                background: 'rgba(255,255,255,0.03)',
-                borderRadius: '4px'
-              }}>{l}</th>
+              <th key={l} style={{ padding: '2px 0', color: l === 'n' ? '#facc15' : '#4ade80', fontSize: '11px', background: 'rgba(255,255,255,0.03)', borderRadius: '4px' }}>{l}</th>
             ))}
           </tr>
         </thead>
@@ -70,35 +84,10 @@ function FullMobileCard({ data, id }) {
           {Array.from({ length: 5 }, (_, r) => (
             <tr key={r}>
               {cols.map((col, c) => {
-                if (c === 2 && r === 2) {
-                  return (
-                    <td key={c} style={{ 
-                      background: '#ec4899', 
-                      color: '#fff', 
-                      fontSize: '12px',
-                      borderRadius: '4px',
-                      padding: '5px 0' 
-                    }}>★</td>
-                  )
-                }
+                if (c === 2 && r === 2) return <td key={c} style={{ background: '#ec4899', borderRadius: '4px', padding: '4px 0' }}>★</td>
                 const colData = data[col] || data[col.toUpperCase()] || []
-                let v = ''
-                if (c === 2) {
-                  const targetIdx = r < 2 ? r : r - 1
-                  v = colData[targetIdx] ?? ''
-                } else {
-                  v = colData[r] ?? ''
-                }
-                return (
-                  <td key={c} style={{ 
-                    padding: '5px 0', 
-                    background: 'rgba(255, 255, 255, 0.05)',
-                    borderRadius: '4px',
-                    color: '#e2e8f0'
-                  }}>
-                    {v}
-                  </td>
-                )
+                const v = c === 2 ? colData[r < 2 ? r : r - 1] ?? '' : colData[r] ?? ''
+                return <td key={c} style={{ padding: '4px 0', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '4px', color: '#e2e8f0' }}>{v}</td>
               })}
             </tr>
           ))}
@@ -117,9 +106,9 @@ export default function CartelaPage() {
   }, [user, navigate])
 
   const rawKey = (user?.telegram_id || user?.phone || '').toString()
-  const playerKey = sanitizeKey(rawKey)
+  const playerKey = useMemo(() => sanitizeKey(rawKey), [rawKey])
 
-  // State
+  // Component State
   const [allCards, setAllCards]           = useState({})
   const [taken, setTaken]                 = useState({})
   const [selectedCards, setSelectedCards] = useState([])
@@ -136,6 +125,7 @@ export default function CartelaPage() {
   const [wasDisconnected, setWasDisconnected] = useState(false)
   const [waitingForPlayers, setWaitingForPlayers] = useState(false)
 
+  // Atomic Context Tracking for Thread Safety
   const stateRef = useRef({})
   stateRef.current = { selectedCards, joined, gameActive, pCount, bal, taken, prize }
 
@@ -144,114 +134,102 @@ export default function CartelaPage() {
   const gameIdRef = useRef(null)
   const gameNumRef = useRef(1)
 
+  // Pull static matrix entries once
   useEffect(() => {
     if (!user) return
-    get(ref(db, 'cartelas'))
-      .then(snap => {
-        if (snap.exists()) {
-          const data = snap.val()
-          const mapped = {}
-          Object.keys(data).forEach(k => { mapped[Number(k)] = data[k] })
-          setAllCards(mapped)
-        }
-        setLoading(false)
-      })
-      .catch((err) => {
-        console.error("DB down:", err)
-        setLoading(false)
-      })
+    get(ref(db, 'cartelas')).then(snap => {
+      if (snap.exists()) {
+        const data = snap.val()
+        const mapped = {}
+        Object.keys(data).forEach(k => { mapped[Number(k)] = data[k] })
+        setAllCards(mapped)
+      }
+      setLoading(false)
+    }).catch(() => setLoading(false))
   }, [user])
 
+  // Realtime Database Frame Subscriptions
   useEffect(() => {
     if (!user || !playerKey) return
 
-    const userRef = ref(db, `users/${playerKey}`)
-    const unsub1 = onValue(userRef, snap => {
-      if (snap.exists()) {
-        const u = snap.val()
-        setBal(u.balance !== undefined ? u.balance : 0)
-        setProfileName(u.first_name || u.name || 'Player')
-        if (u.username) setProfileLbl('@' + u.username)
-      }
-    })
-
-    const takenRef = ref(db, 'lobby/takenCards')
-    const unsub2 = onValue(takenRef, snap => {
-      setTaken(snap.val() || {})
-    })
-
-    const playersRef = ref(db, 'lobby/players')
-    const unsub3 = onValue(playersRef, snap => {
-      const data = snap.val() || {}
-      const activePlayerCount = Object.keys(data).length
-      setPCount(activePlayerCount)
-      setPrize(Math.floor(activePlayerCount * FEE * PAY))
-
-      if (!stateRef.current.gameActive) {
-        if (activePlayerCount >= MIN_PLAYERS) {
-          setWaitingForPlayers(false)
-          checkAndStartTimer(Math.floor(activePlayerCount * FEE * PAY))
-        } else {
-          setWaitingForPlayers(stateRef.current.joined)
-          stopCountdown()
-          remove(ref(db, 'lobby/gameStartAt')).catch(() => {})
+    const unsubscribes = [
+      onValue(ref(db, `users/${playerKey}`), snap => {
+        if (snap.exists()) {
+          const u = snap.val()
+          setBal(u.balance ?? 0)
+          setProfileName(u.first_name || u.name || 'Player')
+          if (u.username) setProfileLbl('@' + u.username)
         }
-      }
-    })
+      }),
 
-    const gnRef = ref(db, 'lobby/currentGameNum')
-    const unsub4 = onValue(gnRef, snap => {
-      if (snap.val()) setGameNum(snap.val())
-    })
+      onValue(ref(db, 'lobby/takenCards'), snap => {
+        setTaken(snap.val() || {})
+      }),
 
-    const timerRef = ref(db, 'lobby/gameStartAt')
-    const unsub5 = onValue(timerRef, snap => {
-      const t = snap.val()
-      if (!t) { stopCountdown(); return }
-      if (stateRef.current.gameActive) return
+      onValue(ref(db, 'lobby/players'), snap => {
+        const data = snap.val() || {}
+        const activePlayerCount = Object.keys(data).length
+        setPCount(activePlayerCount)
+        const updatedPrize = Math.floor(activePlayerCount * FEE * PAY)
+        setPrize(updatedPrize)
 
-      const rem = Math.ceil((t - now()) / 1000)
-      if (rem > 0 && rem <= MOBILE_TIMER_SEC + 5) startCountdown(rem)
-      else if (rem <= 0) triggerGameStart()
-    })
+        if (!stateRef.current.gameActive) {
+          if (activePlayerCount >= MIN_PLAYERS) {
+            setWaitingForPlayers(false)
+            checkAndStartTimer(updatedPrize)
+          } else {
+            setWaitingForPlayers(stateRef.current.joined)
+            stopCountdown()
+            remove(ref(db, 'lobby/gameStartAt')).catch(() => {})
+          }
+        }
+      }),
 
-    const endedRef = ref(db, 'activeGame/ended')
-    const unsub6 = onValue(endedRef, snap => {
-      if (snap.val() === true) resetLobby()
-    })
+      onValue(ref(db, 'lobby/currentGameNum'), snap => {
+        if (snap.val()) setGameNum(snap.val())
+      }),
 
-    const statusRef = ref(db, 'game/status')
-    const unsub7 = onValue(statusRef, snap => {
-      if (snap.val() === 'started' && !stateRef.current.gameActive) {
-        setGameActive(true)
-        navigate(stateRef.current.joined ? '/game' : '/game?spectator=true')
-      }
-    })
+      onValue(ref(db, 'lobby/gameStartAt'), snap => {
+        const t = snap.val()
+        if (!t) { stopCountdown(); return }
+        if (stateRef.current.gameActive) return
+        const rem = Math.ceil((t - now()) / 1000)
+        if (rem > 0 && rem <= MOBILE_TIMER_SEC + 5) startCountdown(rem)
+        else if (rem <= 0) triggerGameStart()
+      }),
 
-    return () => {
-      ;[unsub1, unsub2, unsub3, unsub4, unsub5, unsub6, unsub7].forEach(u => u())
-    }
+      onValue(ref(db, 'activeGame/ended'), snap => {
+        if (snap.val() === true) resetLobby()
+      }),
+
+      onValue(ref(db, 'game/status'), snap => {
+        if (snap.val() === 'started' && !stateRef.current.gameActive) {
+          setGameActive(true)
+          navigate(stateRef.current.joined ? '/game' : '/game?spectator=true')
+        }
+      })
+    ]
+
+    return () => unsubscribes.forEach(unsub => unsub())
   }, [playerKey, navigate, user])
 
+  // Sync state & handle session re-entries
   useEffect(() => {
     if (!user || Object.keys(allCards).length === 0) return
-
     async function restoreSession() {
       const snap = await get(ref(db, `lobby/players/${playerKey}`))
       if (!snap.exists()) return
       const pData = snap.val()
-      const gid = pData.gameId
-      gameIdRef.current = gid
+      gameIdRef.current = pData.gameId
       const numSnap = await get(ref(db, 'lobby/currentGameNum'))
       gameNumRef.current = numSnap.val() || 1
       setGameNum(gameNumRef.current)
+      
       const nums = pData.cartelas || []
       const restored = nums.map(id => ({ id: parseInt(id), data: allCards[id] }))
       setSelectedCards(restored)
       setJoined(true)
       setWasDisconnected(true)
-      localStorage.setItem('currentGameId', gid)
-      localStorage.setItem('currentGameNum', gameNumRef.current)
       saveLocal(nums, restored.map(c => c.data), stateRef.current.prize)
 
       const presRef = ref(db, `lobby/presence/${playerKey}`)
@@ -266,8 +244,7 @@ export default function CartelaPage() {
     const snap = await get(ref(db, 'lobby/currentGameId'))
     let gid = snap.val()
     if (!gid) {
-      const rand = Math.random().toString(36).substring(2, 10).toUpperCase()
-      gid = `BNG-${rand}`
+      gid = `BNG-${Math.random().toString(36).substring(2, 10).toUpperCase()}`
       const txn = await runTransaction(ref(db, 'meta/gameCounter'), c => (c || 0) + 1)
       gameNumRef.current = txn.snapshot.val()
       await Promise.all([
@@ -298,9 +275,7 @@ export default function CartelaPage() {
   }
 
   async function joinWithCards(cards) {
-    if (pendingOp.current) return
-    if (!cards.length) return
-    if (stateRef.current.bal < FEE) return
+    if (pendingOp.current || !cards.length || stateRef.current.bal < FEE) return
     pendingOp.current = true
     await getOrCreateGameId()
     try {
@@ -324,8 +299,8 @@ export default function CartelaPage() {
       updates[`lobby/playerCards/${playerKey}`] = { cardNumbers, cardsData, gameId: gameIdRef.current }
       await update(ref(db), updates)
 
-      const simulatedCount = stateRef.current.pCount === 0 ? 1 : stateRef.current.pCount
-      const projectedPrize = Math.floor(simulatedCount * FEE * PAY)
+      const simCount = stateRef.current.pCount === 0 ? 1 : stateRef.current.pCount
+      const projectedPrize = Math.floor(simCount * FEE * PAY)
 
       saveLocal(cardNumbers, cardsData, projectedPrize)
       setJoined(true)
@@ -333,7 +308,7 @@ export default function CartelaPage() {
       set(presRef, true)
       onDisconnect(presRef).remove()
 
-      if (simulatedCount >= MIN_PLAYERS) {
+      if (simCount >= MIN_PLAYERS) {
         await checkAndStartTimer(projectedPrize)
         setWaitingForPlayers(false)
       } else {
@@ -341,7 +316,6 @@ export default function CartelaPage() {
       }
     } catch (e) {
       console.error(e)
-      setSelectedCards([])
     } finally {
       pendingOp.current = false
     }
@@ -350,11 +324,14 @@ export default function CartelaPage() {
   async function removeCard(id, currentSelected) {
     if (stateRef.current.gameActive || pendingOp.current) return
     pendingOp.current = true
+    // Optimistic state change to keep UI fully responsive
+    const newSelected = currentSelected.filter(c => c.id !== id);
+    setSelectedCards(newSelected);
+
     try {
       await runTransaction(ref(db, `users/${playerKey}/balance`), b => (b || 0) + FEE)
       const updates = {}
       updates[`lobby/takenCards/${id}`] = null
-      const newSelected = currentSelected.filter(c => c.id !== id)
       if (!newSelected.length) {
         updates[`lobby/players/${playerKey}`]    = null
         updates[`lobby/playerCards/${playerKey}`] = null
@@ -371,7 +348,6 @@ export default function CartelaPage() {
         updates[`lobby/playerCards/${playerKey}`] = { cardNumbers, cardsData, gameId: gameIdRef.current }
       }
       await update(ref(db), updates)
-      setSelectedCards(newSelected)
     } catch (e) {
       console.error(e)
     } finally {
@@ -383,6 +359,7 @@ export default function CartelaPage() {
     const { gameActive: ga, taken: tk, selectedCards: sc } = stateRef.current
     if (ga || pendingOp.current) return
     if (tk[id] && tk[id] !== playerKey) return
+    
     const alreadyIdx = sc.findIndex(c => c.id === id)
     if (alreadyIdx !== -1) {
       if (stateRef.current.joined) await removeCard(id, sc)
@@ -392,15 +369,15 @@ export default function CartelaPage() {
     if (sc.length >= MAX_CARDS) return
 
     const newCard = { id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } }
-    const newSelected = [...sc, newCard]
-    setSelectedCards(newSelected)
-    await joinWithCards(newSelected)
+    const nextSelected = [...sc, newCard]
+    
+    // Smooth, dynamic visual feedback
+    setSelectedCards(nextSelected)
+    await joinWithCards(nextSelected)
   }
 
   async function checkAndStartTimer(currentPrize) {
-    if (stateRef.current.gameActive) return
-    if (stateRef.current.pCount < MIN_PLAYERS) return
-
+    if (stateRef.current.gameActive || stateRef.current.pCount < MIN_PLAYERS) return
     const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
     if (startAtSnap.val()) {
       const rem = Math.ceil((startAtSnap.val() - now()) / 1000)
@@ -409,13 +386,7 @@ export default function CartelaPage() {
     const startAt = now() + MOBILE_TIMER_SEC * 1000
     await update(ref(db), {
       'lobby/gameStartAt': startAt,
-      'game/meta': {
-        gameId: gameIdRef.current,
-        gameNum: gameNumRef.current,
-        startTime: startAt,
-        status: 'waiting',
-        prizePool: currentPrize
-      }
+      'game/meta': { gameId: gameIdRef.current, gameNum: gameNumRef.current, startTime: startAt, status: 'waiting', prizePool: currentPrize }
     })
     startCountdown(MOBILE_TIMER_SEC)
   }
@@ -439,7 +410,6 @@ export default function CartelaPage() {
   async function triggerGameStart() {
     if (stateRef.current.gameActive) return
     if (stateRef.current.pCount < MIN_PLAYERS) { stopCountdown(); return }
-
     setGameActive(true)
     localStorage.setItem('prizePool',  stateRef.current.prize.toString())
     localStorage.setItem('numPlayers', stateRef.current.pCount.toString())
@@ -460,45 +430,6 @@ export default function CartelaPage() {
     stopCountdown()
   }
 
-  function getNumberStyles(id) {
-    const { selectedCards: sc, taken: tk } = stateRef.current
-    const isMine = sc.some(c => c.id === id)
-
-    const base = {
-      padding: '10px 0',
-      fontSize: '13px',
-      fontWeight: '800',
-      borderRadius: '8px',
-      cursor: 'pointer',
-      border: '1px solid transparent',
-      textAlign: 'center',
-      transition: 'all 0.15s ease'
-    }
-
-    if (isMine || (tk[id] && tk[id] === playerKey)) {
-      return { 
-        ...base, 
-        background: '#ffffff', 
-        color: '#0a0a0a', 
-        borderColor: '#4ade80',
-        boxShadow: '0 0 12px rgba(74, 222, 128, 0.5)' 
-      }
-    }
-    if (tk[id]) {
-      return { ...base, background: '#1e1111', color: '#ef4444', opacity: '0.25', cursor: 'not-allowed' }
-    }
-    if (gameActive) {
-      return { ...base, background: '#141414', color: '#444', cursor: 'not-allowed' }
-    }
-    return { 
-      ...base, 
-      background: 'rgba(255,255,255,0.04)', 
-      color: '#cbd5e1', 
-      borderColor: 'rgba(255,255,255,0.05)',
-      ':hover': { background: 'rgba(255,255,255,0.1)' }
-    }
-  }
-
   if (!user) return null
 
   const numbersArray = Array.from({ length: 450 }, (_, i) => i + 1)
@@ -508,165 +439,166 @@ export default function CartelaPage() {
   return (
     <div style={{ background: '#09090b', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fafafa', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
       
+      {/* Structural Stylesheet Injection to avoid heavy inline calculation loops */}
+      <style>{`
+        .num-btn {
+          padding: 6px 0;
+          font-size: 11px;
+          font-weight: 800;
+          border-radius: 5px;
+          cursor: pointer;
+          text-align: center;
+          transition: all 0.1s ease;
+          background: rgba(255,255,255,0.03);
+          color: #cbd5e1;
+          border: 1px solid rgba(255,255,255,0.05);
+        }
+        .num-btn[data-state="mine"] {
+          background: #ffffff !important;
+          color: #0a0a0a !important;
+          border-color: #4ade80 !important;
+          box-shadow: 0 0 8px rgba(74, 222, 128, 0.4);
+        }
+        .num-btn[data-state="taken"] {
+          background: #1e1111 !important;
+          color: #ef4444 !important;
+          opacity: 0.2;
+          cursor: not-allowed;
+        }
+        .num-btn[data-state="locked"] {
+          background: #141414 !important;
+          color: #444 !important;
+          cursor: not-allowed;
+        }
+        .num-btn:active:not([data-state="taken"]) {
+          transform: scale(0.92);
+        }
+      `}</style>
+
       {loading && (
-        <div className="loading-overlay" style={{ background: 'rgba(9,9,11,0.95)', position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div className="loader-box" style={{ textAlign: 'center' }}>
-            <div className="spinner" style={{ width: '40px', height: '40px', border: '3px solid rgba(255,255,255,0.1)', borderTopColor: '#4ade80', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 12px' }} />
-            <div style={{ fontSize: '11px', letterSpacing: '1px', color: '#a1a1aa' }}>LOADING PLATFORM CORE DATA...</div>
+        <div style={{ background: 'rgba(9,9,11,0.95)', position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ width: '32px', height: '32px', border: '3px solid rgba(255,255,255,0.1)', borderTopColor: '#4ade80', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 12px' }} />
+            <div style={{ fontSize: '10px', letterSpacing: '1px', color: '#a1a1aa' }}>LOADING PLATFORM CORE DATA...</div>
           </div>
         </div>
       )}
 
-      {/* Modern High-Contrast Dynamic Top Bar */}
-      <nav style={{ 
-        flexShrink: 0, 
-        background: 'rgba(18, 18, 24, 0.8)', 
-        backdropFilter: 'blur(12px)',
-        borderBottom: '1px solid rgba(255,255,255,0.06)', 
-        padding: '10px 14px', 
-        display: 'flex', 
-        flexDirection: 'column', 
-        gap: '8px' 
-      }}>
+      {/* Top Navigation Control Bar */}
+      <nav style={{ flexShrink: 0, background: 'rgba(18, 18, 24, 0.8)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 8px #4ade80' }} />
-            <span style={{ fontSize: '14px', fontWeight: '800', letterSpacing: '0.5px' }}>{profileName}</span>
+            <span style={{ fontSize: '13px', fontWeight: '800' }}>{profileName}</span>
             <span style={{ fontSize: '11px', color: '#71717a' }}>{profileLbl}</span>
           </div>
-          
-          <div style={{ background: 'rgba(74, 222, 128, 0.1)', border: '1px solid rgba(74, 222, 128, 0.2)', borderRadius: '20px', padding: '4px 12px', fontSize: '13px', fontWeight: '800', color: '#4ade80' }}>
-            {Number(bal).toFixed(2)} <span style={{ fontSize: '10px', fontWeight: '500' }}>ETB</span>
+          <div style={{ background: 'rgba(74, 222, 128, 0.1)', border: '1px solid rgba(74, 222, 128, 0.2)', borderRadius: '20px', padding: '3px 10px', fontSize: '12px', fontWeight: '800', color: '#4ade80' }}>
+            {Number(bal).toFixed(2)} <span style={{ fontSize: '9px', fontWeight: '500' }}>ETB</span>
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px' }}>
-          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '4px 10px', display: 'flex', flexDirection: 'column', minWidth: '60px' }}>
-            <span style={{ fontSize: '9px', color: '#71717a', textTransform: 'uppercase' }}>Stake</span>
-            <span style={{ fontSize: '12px', fontWeight: '700' }}>{FEE}</span>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '6px', padding: '3px 8px', display: 'flex', flexDirection: 'column', minWidth: '55px' }}>
+            <span style={{ fontSize: '8px', color: '#71717a' }}>STAKE</span>
+            <span style={{ fontSize: '11px', fontWeight: '700' }}>{FEE}</span>
           </div>
-          <div style={{ background: 'rgba(234, 179, 8, 0.05)', border: '1px solid rgba(234, 179, 8, 0.15)', borderRadius: '8px', padding: '4px 10px', display: 'flex', flexDirection: 'column', minWidth: '75px' }}>
-            <span style={{ fontSize: '9px', color: '#eab308', textTransform: 'uppercase' }}>Derash</span>
-            <span style={{ fontSize: '12px', fontWeight: '800', color: '#eab308' }}>{prize}</span>
+          <div style={{ background: 'rgba(234, 179, 8, 0.05)', border: '1px solid rgba(234, 179, 8, 0.15)', borderRadius: '6px', padding: '3px 8px', display: 'flex', flexDirection: 'column', minWidth: '70px' }}>
+            <span style={{ fontSize: '8px', color: '#eab308' }}>DERASH</span>
+            <span style={{ fontSize: '11px', fontWeight: '800', color: '#eab308' }}>{prize}</span>
           </div>
-          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px', padding: '4px 10px', display: 'flex', flexDirection: 'column', minWidth: '60px' }}>
-            <span style={{ fontSize: '9px', color: '#71717a', textTransform: 'uppercase' }}>Game</span>
-            <span style={{ fontSize: '12px', fontWeight: '700', color: '#38bdf8' }}>#{gameNum}</span>
+          <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '6px', padding: '3px 8px', display: 'flex', flexDirection: 'column', minWidth: '55px' }}>
+            <span style={{ fontSize: '8px', color: '#71717a' }}>GAME</span>
+            <span style={{ fontSize: '11px', fontWeight: '700', color: '#38bdf8' }}>#{gameNum}</span>
           </div>
           
-          {/* Neon Countdown Pill */}
-          <div style={{ 
-            marginLeft: 'auto',
-            background: timerUrgent ? 'rgba(239, 68, 68, 0.15)' : 'rgba(255,255,255,0.03)', 
-            border: timerUrgent ? '1px solid #ef4444' : '1px solid rgba(255,255,255,0.05)', 
-            borderRadius: '8px', 
-            padding: '4px 14px', 
-            display: 'flex', 
-            alignItems: 'center', 
-            justifyContent: 'center',
-            minWidth: '50px',
-            boxShadow: timerUrgent ? '0 0 10px rgba(239, 68, 68, 0.3)' : 'none'
-          }}>
-            <span style={{ fontSize: '14px', fontWeight: '900', color: timerUrgent ? '#ef4444' : '#fafafa' }}>
+          <div style={{ marginLeft: 'auto', background: timerUrgent ? 'rgba(239, 68, 68, 0.15)' : 'rgba(255,255,255,0.03)', border: timerUrgent ? '1px solid #ef4444' : '1px solid rgba(255,255,255,0.05)', borderRadius: '6px', padding: '3px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: '45px' }}>
+            <span style={{ fontSize: '13px', fontWeight: '900', color: timerUrgent ? '#ef4444' : '#fafafa' }}>
               {cdSec !== null ? `${cdSec}s` : '--'}
             </span>
           </div>
         </div>
       </nav>
 
-      {/* Main Grid Viewport Container */}
-      <div className="lobby-scroll" style={{ flex: '1 1 auto', overflowY: 'auto', padding: '12px 8px' }}>
-        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '10px', padding: '0 4px' }}>
-          <div style={{ background: 'rgba(56, 189, 248, 0.1)', border: '1px solid rgba(56, 189, 248, 0.2)', color: '#38bdf8', fontSize: '11px', fontWeight: '700', padding: '3px 8px', borderRadius: '6px' }}>
+      {/* Main Micro-Sized Grid Viewport */}
+      <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '8px' }}>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '8px' }}>
+          <div style={{ background: 'rgba(56, 189, 248, 0.1)', border: '1px solid rgba(56, 189, 248, 0.2)', color: '#38bdf8', fontSize: '10px', fontWeight: '700', padding: '2px 6px', borderRadius: '4px' }}>
             👥 {pCount} Active
           </div>
           {wasDisconnected && joined && (
-            <div style={{ background: '#ca8a04', color: '#fff', fontSize: '11px', fontWeight: '700', padding: '3px 8px', borderRadius: '6px' }}>✓ Reconnected</div>
+            <div style={{ background: '#ca8a04', color: '#fff', fontSize: '10px', fontWeight: '700', padding: '2px 6px', borderRadius: '4px' }}>✓ Reconnected</div>
           )}
           {waitingForPlayers && cdSec === null && (
-            <div style={{ color: '#a1a1aa', fontSize: '11px', fontWeight: '500', marginLeft: 'auto' }}>
+            <div style={{ color: '#a1a1aa', fontSize: '10px', fontWeight: '500', marginLeft: 'auto' }}>
               ⏳ Need {playersNeeded} more to start
             </div>
           )}
         </div>
 
+        {/* Compact 12-Column Responsive Board Layout */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(10, 1fr)',
-          gap: '5px',
+          gridTemplateColumns: 'repeat(12, 1fr)',
+          gap: '3px',
           background: 'rgba(255,255,255,0.01)',
-          padding: '8px',
-          borderRadius: '12px',
+          padding: '4px',
+          borderRadius: '8px',
           border: '1px solid rgba(255,255,255,0.03)'
         }}>
-          {numbersArray.map(id => (
-            <button
-              key={id}
-              disabled={taken[id] && taken[id] !== playerKey}
-              style={getNumberStyles(id)}
-              onClick={() => onCardTap(id)}
-            >
-              {id}
-            </button>
-          ))}
+          {numbersArray.map(id => {
+            let stateAttr = "open";
+            if (selectedCards.some(c => c.id === id) || (taken[id] && taken[id] === playerKey)) stateAttr = "mine";
+            else if (taken[id]) stateAttr = "taken";
+            else if (gameActive) stateAttr = "locked";
+
+            return (
+              <button
+                key={id}
+                className="num-btn"
+                data-state={stateAttr}
+                disabled={stateAttr === "taken" || stateAttr === "locked"}
+                onClick={() => onCardTap(id)}
+              >
+                {id}
+              </button>
+            )
+          })}
         </div>
       </div>
 
-      {/* Bottom Panel - Sleek side-by-side card drawer */}
-      <div style={{ 
-        flexShrink: 0,
-        borderTop: '1px solid rgba(255,255,255,0.08)', 
-        background: 'linear-gradient(to top, #040406, #0c0c0e)',
-        padding: '12px 14px 20px',
-        maxHeight: '260px'
-      }}>
+      {/* Dynamic Drawer Context Layout Switcher */}
+      <div style={{ flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.08)', background: 'linear-gradient(to top, #040406, #0c0c0e)', padding: '10px 12px 16px', maxHeight: '280px', overflowY: 'auto' }}>
         {selectedCards.length === 0 ? (
-          <span style={{ display: 'block', padding: '30px 15px', textAlign: 'center', color: '#52525b', fontSize: '12px', fontWeight: '500', letterSpacing: '0.2px' }}>
+          <span style={{ display: 'block', padding: '20px', textAlign: 'center', color: '#52525b', fontSize: '11px' }}>
             Tap an available card number above to purchase and preview matrix
           </span>
+        ) : selectedCards.length === 1 ? (
+          /* Single Selection: Display Detailed Layout */
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={(e) => { e.stopPropagation(); onCardTap(selectedCards[0].id); }}
+              style={{ position: 'absolute', top: '8px', right: '8px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', fontSize: '9px', fontWeight: '800', zIndex: '10' }}
+            >
+              REMOVE
+            </button>
+            <FullMobileCard id={selectedCards[0].id} data={allCards[selectedCards[0].id]} />
+          </div>
         ) : (
-          /* Multi-card slider viewport layout */
-          <div style={{ 
-            display: 'flex', 
-            gap: '12px', 
-            overflowX: 'auto', 
-            paddingBottom: '4px',
-            scrollSnapType: 'x mandatory'
-          }}>
-            {selectedCards.map(c => (
-              <div key={c.id} style={{ 
-                position: 'relative', 
-                flex: selectedCards.length > 1 ? '0 0 75%' : '1 1 100%', 
-                maxWidth: selectedCards.length > 1 ? '240px' : '100%',
-                scrollSnapAlign: 'start'
-              }}>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onCardTap(c.id);
-                  }}
-                  style={{
-                    position: 'absolute',
-                    top: '12px',
-                    right: '12px',
-                    background: 'rgba(239, 68, 68, 0.9)',
-                    backdropFilter: 'blur(4px)',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '2px 8px',
-                    cursor: 'pointer',
-                    fontSize: '9px',
-                    fontWeight: '800',
-                    zIndex: '10',
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.4)'
-                  }}
-                >
-                  REMOVE
-                </button>
-                <FullMobileCard id={c.id} data={allCards[c.id]} />
-              </div>
-            ))}
+          /* Two or More Selections: Switch to Mini Grid Viewport Layout */
+          <div>
+            <div style={{ fontSize: '10px', color: '#a1a1aa', fontWeight: '700', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Selected Matrices ({selectedCards.length})
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+              {selectedCards.map(c => (
+                <MiniMobileCard 
+                  key={c.id} 
+                  id={c.id} 
+                  data={allCards[c.id]} 
+                  onRemove={(targetId) => onCardTap(targetId)} 
+                />
+              ))}
+            </div>
           </div>
         )}
       </div>
