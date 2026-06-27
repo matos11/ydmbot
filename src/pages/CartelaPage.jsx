@@ -15,9 +15,6 @@ function getUser() {
   try { return JSON.parse(localStorage.getItem('bingoUser') || 'null') } catch { return null }
 }
 
-/**
- * High-Contrast Mini-Matrix Grid Component matches image_7f0f04.png exactly
- */
 function MiniCard({ data, id, onRemove }) {
   if (!data) return <div style={{ color: '#52525b', padding: '10px', fontSize: '11px' }}>Loading...</div>
   const cols = ['b', 'i', 'n', 'g', 'o']
@@ -42,7 +39,6 @@ function MiniCard({ data, id, onRemove }) {
         </button>
       </div>
 
-      {/* Grid structure matching image_7f0f04.png columns */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px', textAlign: 'center' }}>
         {cols.map(l => (
           <div key={l} style={{ fontSize: '10px', fontWeight: '900', color: l === 'n' ? '#facc15' : l === 'g' ? '#ec4899' : '#00d8ff', textTransform: 'uppercase' }}>
@@ -216,6 +212,21 @@ export default function CartelaPage() {
     const cardNumbers = nextCards.map(c => c.id)
     const cardsData   = nextCards.map(c => c.data)
     
+    // Atomically manage entry fee balance deduction / refund logic inside transactional layers
+    await runTransaction(ref(db, `users/${playerKey}/balance`), (currentBal) => {
+      const balVal = currentBal ?? 0
+      // If expanding from 0 cards to joining, deduct the entry fee
+      if (stateRef.current.selectedCards.length === 0 && nextCards.length > 0) {
+        if (balVal < FEE) return // Abort transaction if insufficient funds
+        return balVal - FEE
+      }
+      // If removing all chosen cards, refund the transaction entry fee back safely
+      if (stateRef.current.selectedCards.length > 0 && nextCards.length === 0) {
+        return balVal + FEE
+      }
+      return currentBal
+    })
+
     const updates = {}
     Object.keys(stateRef.current.taken).forEach(k => {
       if (stateRef.current.taken[k] === playerKey) updates[`lobby/takenCards/${k}`] = null
@@ -271,7 +282,7 @@ export default function CartelaPage() {
     const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
     if (startAtSnap.val()) return
 
-    const startAt = now() + 3000
+    const startAt = now() + 3000 // 3 seconds rapid countdown trigger when >= 2 players join
     await update(ref(db), {
       'lobby/gameStartAt': startAt,
       'game/meta': { gameId: gameIdRef.current, gameNum: gameNumRef.current, startTime: startAt, status: 'waiting', prizePool: currentPrize }
@@ -306,7 +317,7 @@ export default function CartelaPage() {
   }
 
   if (!user) return null
-  const numbersArray = Array.from({ length: 110 }, (_, i) => i + 1) // Scoped viewport matching visual template limits
+  const numbersArray = Array.from({ length: 110 }, (_, i) => i + 1)
 
   return (
     <div style={{ background: '#02000a', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fafafa', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
@@ -345,7 +356,7 @@ export default function CartelaPage() {
         }
       `}</style>
 
-      {/* Navigation Layer */}
+      {/* Primary Lobby Navigation Bar */}
       <nav style={{ background: '#090518', borderBottom: '1px solid #1e113b', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style={{ fontSize: '13px', fontWeight: '800' }}>{profileName}</span>
@@ -353,11 +364,27 @@ export default function CartelaPage() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <div style={{ fontSize: '12px', fontWeight: '800', color: '#10b981' }}>{Number(bal).toFixed(2)} ETB</div>
-          {cdSec !== null && <div style={{ background: '#ef4444', fontSize: '11px', padding: '2px 6px', borderRadius: '4px', fontWeight: '900' }}>{cdSec}s</div>}
         </div>
       </nav>
 
-      {/* Grid Container */}
+      {/* Dynamic Network Status Strip Banner */}
+      <div style={{ background: '#0d0b21', padding: '8px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #1a1533' }}>
+        <div style={{ display: 'flex', gap: '12px', fontSize: '11px', fontWeight: 'bold' }}>
+          <span style={{ color: '#94a3b8' }}>PLAYERS: <span style={{ color: '#38bdf8' }}>{pCount}</span></span>
+          <span style={{ color: '#94a3b8' }}>EST. PRIZE: <span style={{ color: '#eab308' }}>{prize} ETB</span></span>
+        </div>
+        {cdSec !== null ? (
+          <div style={{ background: '#ef4444', color: '#fff', fontSize: '11px', padding: '3px 8px', borderRadius: '4px', fontWeight: '900', letterSpacing: '0.5px' }}>
+            STARTING IN {cdSec}s
+          </div>
+        ) : (
+          <span style={{ fontSize: '10px', color: '#64748b' }}>
+            {pCount < 2 ? 'Waiting for players...' : 'Ready'}
+          </span>
+        )}
+      </div>
+
+      {/* Main Board Interactive Number Grid Container */}
       <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '4px' }}>
         <div className="grid-panel">
           {numbersArray.map(id => {
@@ -380,7 +407,7 @@ export default function CartelaPage() {
         </div>
       </div>
 
-      {/* Multi-Grid Side-by-Side Live Drawer Preview Footer */}
+      {/* Dynamic Mini-Grid Live Drawer Preview Footer */}
       <footer style={{ flexShrink: 0, background: '#04020c', borderTop: '2px solid #120b29', padding: '12px', minHeight: '140px' }}>
         {selectedCards.length === 0 ? (
           <div style={{ textAlign: 'center', color: '#475569', fontSize: '11px', paddingTop: '20px' }}>
