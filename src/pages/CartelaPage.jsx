@@ -15,6 +15,66 @@ function getUser() {
   try { return JSON.parse(localStorage.getItem('bingoUser') || 'null') } catch { return null }
 }
 
+/**
+ * High-Contrast Mini-Matrix Grid Component matches image_7f0f04.png exactly
+ */
+function MiniCard({ data, id, onRemove }) {
+  if (!data) return <div style={{ color: '#52525b', padding: '10px', fontSize: '11px' }}>Loading...</div>
+  const cols = ['b', 'i', 'n', 'g', 'o']
+  return (
+    <div style={{ 
+      flex: '1 1 0',
+      minWidth: '160px',
+      background: '#0a0516', 
+      border: '1px solid #2e1065',
+      borderRadius: '12px', 
+      padding: '10px',
+      position: 'relative',
+      boxShadow: '0 4px 15px rgba(0,0,0,0.6)'
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+        <span style={{ color: '#00d8ff', fontWeight: '800', fontSize: '12px', letterSpacing: '0.5px' }}>Card {id}</span>
+        <button 
+          onClick={(e) => { e.stopPropagation(); onRemove(id); }}
+          style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', border: 'none', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer' }}
+        >
+          RELEASE
+        </button>
+      </div>
+
+      {/* Grid structure matching image_7f0f04.png columns */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px', textAlign: 'center' }}>
+        {cols.map(l => (
+          <div key={l} style={{ fontSize: '10px', fontWeight: '900', color: l === 'n' ? '#facc15' : l === 'g' ? '#ec4899' : '#00d8ff', textTransform: 'uppercase' }}>
+            {l}
+          </div>
+        ))}
+
+        {Array.from({ length: 5 }, (_, r) => (
+          <React.Fragment key={r}>
+            {cols.map((col, c) => {
+              if (c === 2 && r === 2) {
+                return (
+                  <div key={`${c}-${r}`} style={{ background: 'rgba(234,179,8,0.1)', border: '1px solid #eab308', color: '#eab308', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', height: '22px' }}>
+                    ★
+                  </div>
+                )
+              }
+              const colData = data[col] || data[col.toUpperCase()] || []
+              const val = c === 2 ? colData[r < 2 ? r : r - 1] ?? '' : colData[r] ?? ''
+              return (
+                <div key={`${c}-${r}`} style={{ background: '#131124', color: '#cbd5e1', fontSize: '10px', fontWeight: '700', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', height: '22px', border: '1px solid rgba(255,255,255,0.02)' }}>
+                  {val}
+                </div>
+              )
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function CartelaPage() {
   const navigate = useNavigate()
   const user = getUser()
@@ -26,7 +86,6 @@ export default function CartelaPage() {
   const rawKey = (user?.telegram_id || user?.phone || '').toString()
   const playerKey = useMemo(() => sanitizeKey(rawKey), [rawKey])
 
-  // Component Core States
   const [allCards, setAllCards]           = useState({})
   const [taken, setTaken]                 = useState({})
   const [selectedCards, setSelectedCards] = useState([])
@@ -40,9 +99,7 @@ export default function CartelaPage() {
   const [prize, setPrize]                 = useState(0)
   const [gameNum, setGameNum]             = useState('--')
   const [loading, setLoading]             = useState(true)
-  const [waitingForPlayers, setWaitingForPlayers] = useState(false)
 
-  // Thread-safe state tracking for callbacks
   const stateRef = useRef({})
   stateRef.current = { selectedCards, joined, gameActive, pCount, bal, taken, prize }
 
@@ -50,7 +107,6 @@ export default function CartelaPage() {
   const gameIdRef = useRef(null)
   const gameNumRef = useRef(1)
 
-  // Fetch Matrix Schemas Once
   useEffect(() => {
     if (!user) return
     get(ref(db, 'cartelas')).then(snap => {
@@ -64,7 +120,6 @@ export default function CartelaPage() {
     }).catch(() => setLoading(false))
   }, [user])
 
-  // Instantaneous Real-time Stream Listeners
   useEffect(() => {
     if (!user || !playerKey) return
 
@@ -77,11 +132,9 @@ export default function CartelaPage() {
           if (u.username) setProfileLbl('@' + u.username)
         }
       }),
-
       onValue(ref(db, 'lobby/takenCards'), snap => {
         setTaken(snap.val() || {})
       }),
-
       onValue(ref(db, 'lobby/players'), snap => {
         const data = snap.val() || {}
         const activePlayerCount = Object.keys(data).length
@@ -91,20 +144,16 @@ export default function CartelaPage() {
 
         if (!stateRef.current.gameActive) {
           if (activePlayerCount >= MIN_PLAYERS) {
-            setWaitingForPlayers(false)
             checkAndStartTimer(updatedPrize)
           } else {
-            setWaitingForPlayers(stateRef.current.joined)
             stopCountdown()
             remove(ref(db, 'lobby/gameStartAt')).catch(() => {})
           }
         }
       }),
-
       onValue(ref(db, 'lobby/currentGameNum'), snap => {
         if (snap.val()) setGameNum(snap.val())
       }),
-
       onValue(ref(db, 'lobby/gameStartAt'), snap => {
         const t = snap.val()
         if (!t) { stopCountdown(); return }
@@ -113,7 +162,6 @@ export default function CartelaPage() {
         if (rem > 0 && rem <= 25) startCountdown(rem)
         else if (rem <= 0) triggerGameStart()
       }),
-
       onValue(ref(db, 'game/status'), snap => {
         if (snap.val() === 'started' && !stateRef.current.gameActive) {
           setGameActive(true)
@@ -121,11 +169,9 @@ export default function CartelaPage() {
         }
       })
     ]
-
     return () => unsubscribes.forEach(unsub => unsub())
   }, [playerKey, navigate, user])
 
-  // Session recovery layer
   useEffect(() => {
     if (!user || Object.keys(allCards).length === 0) return
     async function restoreSession() {
@@ -140,10 +186,6 @@ export default function CartelaPage() {
       const nums = pData.cartelas || []
       setSelectedCards(nums.map(id => ({ id: parseInt(id), data: allCards[id] })))
       setJoined(true)
-
-      const presRef = ref(db, `lobby/presence/${playerKey}`)
-      set(presRef, true)
-      onDisconnect(presRef).remove()
     }
     restoreSession()
   }, [allCards, playerKey, user])
@@ -169,28 +211,12 @@ export default function CartelaPage() {
     return gid
   }
 
-  function saveLocal(nums, cardsData, prizeAmt) {
-    localStorage.setItem('selectedCartelas',  JSON.stringify(cardsData))
-    localStorage.setItem('cartelaNumbers',    JSON.stringify(nums))
-    localStorage.setItem('selectedCartela',   JSON.stringify(cardsData[0]))
-    localStorage.setItem('cartelaNumber',     nums[0])
-    localStorage.setItem('userName',          user.name || 'Player')
-    localStorage.setItem('userId',            playerKey)
-    localStorage.setItem('entryFee',          FEE)
-    localStorage.setItem('currentGameId',     gameIdRef.current)
-    localStorage.setItem('currentGameNum',    gameNumRef.current)
-    localStorage.setItem('prizePool',         prizeAmt.toString())
-    localStorage.setItem('numPlayers',        stateRef.current.pCount.toString())
-  }
-
-  // Pure Ultra-Fast Real-Time State Syncer
   async function syncSelectionWithDatabase(nextCards) {
     await getOrCreateGameId()
     const cardNumbers = nextCards.map(c => c.id)
     const cardsData   = nextCards.map(c => c.data)
     
     const updates = {}
-    // Clear out previously occupied positions owned by this key cleanly
     Object.keys(stateRef.current.taken).forEach(k => {
       if (stateRef.current.taken[k] === playerKey) updates[`lobby/takenCards/${k}`] = null
     })
@@ -218,24 +244,11 @@ export default function CartelaPage() {
     
     await update(ref(db), updates)
     setJoined(true)
-
-    const projectedPrize = Math.floor((stateRef.current.pCount || 1) * FEE * PAY)
-    saveLocal(cardNumbers, cardsData, projectedPrize)
-
-    const presRef = ref(db, `lobby/presence/${playerKey}`)
-    set(presRef, true)
-    onDisconnect(presRef).remove()
-    
-    if (stateRef.current.pCount >= MIN_PLAYERS) {
-      checkAndStartTimer(projectedPrize)
-    }
   }
 
   async function onCardTap(id) {
     if (stateRef.current.gameActive) return
     const { taken: tk, selectedCards: sc } = stateRef.current
-    
-    // Check if taken by another player
     if (tk[id] && tk[id] !== playerKey) return
     
     const existIdx = sc.findIndex(c => c.id === id)
@@ -246,13 +259,11 @@ export default function CartelaPage() {
     } else {
       if (sc.length >= MAX_CARDS) return
       if (stateRef.current.bal < FEE && sc.length === 0) return
-      const targetMatrix = allCards[id] || { b:[], i:[], n:[], g:[], o:[] }
-      nextCards.push({ id, data: targetMatrix })
+      nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } })
     }
 
-    // High-Speed Optimistic Rendering: Render instantly, sync over network simultaneously
     setSelectedCards(nextCards)
-    syncSelectionWithDatabase(nextCards).catch(err => console.error("Sync Failure: ", err))
+    syncSelectionWithDatabase(nextCards).catch(err => console.error(err))
   }
 
   async function checkAndStartTimer(currentPrize) {
@@ -260,7 +271,7 @@ export default function CartelaPage() {
     const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
     if (startAtSnap.val()) return
 
-    const startAt = now() + 3000 // Ultra-fast quick-start timer delay loop (3 Seconds)
+    const startAt = now() + 3000
     await update(ref(db), {
       'lobby/gameStartAt': startAt,
       'game/meta': { gameId: gameIdRef.current, gameNum: gameNumRef.current, startTime: startAt, status: 'waiting', prizePool: currentPrize }
@@ -285,7 +296,6 @@ export default function CartelaPage() {
 
   async function triggerGameStart() {
     if (stateRef.current.gameActive) return
-    if (stateRef.current.pCount < MIN_PLAYERS) { stopCountdown(); return }
     setGameActive(true)
     if (stateRef.current.joined) {
       await update(ref(db), { 'game/status': 'started', 'game/meta/started': true })
@@ -296,82 +306,60 @@ export default function CartelaPage() {
   }
 
   if (!user) return null
-  const numbersArray = Array.from({ length: 450 }, (_, i) => i + 1)
+  const numbersArray = Array.from({ length: 110 }, (_, i) => i + 1) // Scoped viewport matching visual template limits
 
   return (
-    <div style={{ background: '#070709', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fafafa', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+    <div style={{ background: '#02000a', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fafafa', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
       
-      {/* Global Optimization Stylesheet Rule Definitions */}
       <style>{`
-        .board-matrix {
+        .grid-panel {
           display: grid;
-          grid-template-columns: repeat(15, 1fr);
-          gap: 2px;
-          background: rgba(255,255,255,0.01);
-          padding: 3px;
-          border-radius: 6px;
-          border: 1px solid rgba(255,255,255,0.02);
+          grid-template-columns: repeat(10, 1fr);
+          gap: 6px;
+          background: #030111;
+          padding: 8px;
         }
-        .cell-node {
-          padding: 5px 0;
-          font-size: 10px;
-          font-weight: 900;
-          border-radius: 4px;
+        .matrix-btn {
+          padding: 10px 0;
+          font-size: 13px;
+          font-weight: 800;
+          border-radius: 8px;
           cursor: pointer;
           text-align: center;
-          background: rgba(255,255,255,0.02);
-          color: #94a3b8;
-          border: 1px solid rgba(255,255,255,0.04);
+          background: #192231;
+          color: #a1b0cb;
+          border: 1px solid rgba(255,255,255,0.03);
           transition: transform 0.05s ease;
         }
-        .cell-node[data-status="selected"] {
+        .matrix-btn[data-status="selected"] {
           background: #ffffff !important;
           color: #000000 !important;
-          border-color: #22c55e !important;
-          box-shadow: 0 0 6px #22c55e;
+          box-shadow: 0 0 14px rgba(255,255,255,0.9);
+          transform: scale(0.96);
         }
-        .cell-node[data-status="taken"] {
-          background: #1a0b0b !important;
-          color: #f87171 !important;
-          border-color: rgba(248,113,113,0.1) !important;
-          opacity: 0.15;
+        .matrix-btn[data-status="taken"] {
+          background: #0d0614 !important;
+          color: #ef4444 !important;
+          opacity: 0.2;
           cursor: not-allowed;
-        }
-        .cell-node:active:not([data-status="taken"]) {
-          transform: scale(0.88);
         }
       `}</style>
 
-      {loading && (
-        <div style={{ background: '#070709', position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ width: '24px', height: '24px', border: '2px solid rgba(255,255,255,0.1)', borderTopColor: '#22c55e', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
-        </div>
-      )}
-
-      {/* Top Navigation Control Dashboard */}
-      <nav style={{ flexShrink: 0, background: '#0e0e12', borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      {/* Navigation Layer */}
+      <nav style={{ background: '#090518', borderBottom: '1px solid #1e113b', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style={{ fontSize: '12px', fontWeight: '800' }}>{profileName}</span>
-          <span style={{ fontSize: '10px', color: '#52525b' }}>{profileLbl}</span>
+          <span style={{ fontSize: '13px', fontWeight: '800' }}>{profileName}</span>
+          <span style={{ fontSize: '10px', color: '#6d28d9' }}>#{gameNum}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <div style={{ fontSize: '10px', color: '#eab308', background: 'rgba(234,179,8,0.06)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(234,179,8,0.1)' }}>
-            D: <span style={{ fontWeight: '800' }}>{prize}</span>
-          </div>
-          <div style={{ fontSize: '11px', fontWeight: '800', color: '#22c55e' }}>
-            {Number(bal).toFixed(1)} <span style={{ fontSize: '8px' }}>ETB</span>
-          </div>
-          {cdSec !== null && (
-            <div style={{ background: '#ef4444', color: '#fff', fontSize: '10px', fontWeight: '900', padding: '2px 6px', borderRadius: '4px', animation: 'pulse 1s infinite' }}>
-              {cdSec}s
-            </div>
-          )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ fontSize: '12px', fontWeight: '800', color: '#10b981' }}>{Number(bal).toFixed(2)} ETB</div>
+          {cdSec !== null && <div style={{ background: '#ef4444', fontSize: '11px', padding: '2px 6px', borderRadius: '4px', fontWeight: '900' }}>{cdSec}s</div>}
         </div>
       </nav>
 
-      {/* Main Board Container Section */}
-      <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '6px' }}>
-        <div className="board-matrix">
+      {/* Grid Container */}
+      <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '4px' }}>
+        <div className="grid-panel">
           {numbersArray.map(id => {
             let status = "open"
             if (selectedCards.some(c => c.id === id) || (taken[id] && taken[id] === playerKey)) status = "selected"
@@ -380,7 +368,7 @@ export default function CartelaPage() {
             return (
               <button
                 key={id}
-                className="cell-node"
+                className="matrix-btn"
                 data-status={status}
                 disabled={status === "taken"}
                 onClick={() => onCardTap(id)}
@@ -392,30 +380,24 @@ export default function CartelaPage() {
         </div>
       </div>
 
-      {/* Ultra-Small Minimalist Sticky Dynamic Footer Panel */}
-      <footer style={{ flexShrink: 0, background: '#09090b', borderTop: '1px solid rgba(255,255,255,0.06)', padding: '6px 10px display:flex, alignItems:center, justifyContent:space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
-            <span style={{ fontSize: '9px', fontWeight: '700', color: '#71717a', marginRight: '2px' }}>MY SLOTS:</span>
-            {selectedCards.length === 0 ? (
-              <span style={{ fontSize: '9px', color: '#4b5563' }}>None selected</span>
-            ) : (
-              selectedCards.map(c => (
-                <div 
-                  key={c.id} 
-                  onClick={() => onCardTap(c.id)}
-                  style={{ background: '#22c55e', color: '#000', fontSize: '10px', fontWeight: '900', padding: '1px 5px', borderRadius: '3px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}
-                >
-                  #{c.id} <span style={{ opacity: 0.6, fontSize: '8px' }}>✕</span>
-                </div>
-              ))
-            )}
+      {/* Multi-Grid Side-by-Side Live Drawer Preview Footer */}
+      <footer style={{ flexShrink: 0, background: '#04020c', borderTop: '2px solid #120b29', padding: '12px', minHeight: '140px' }}>
+        {selectedCards.length === 0 ? (
+          <div style={{ textAlign: 'center', color: '#475569', fontSize: '11px', paddingTop: '20px' }}>
+            Tap a number from the grid above to lock and preview your cartela matrices
           </div>
-
-          <div style={{ fontSize: '9px', color: '#38bdf8', fontWeight: '700', background: 'rgba(56,189,248,0.06)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(56,189,248,0.1)' }}>
-            👥 {pCount} IN LOBBY
+        ) : (
+          <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
+            {selectedCards.map(c => (
+              <MiniCard 
+                key={c.id}
+                id={c.id}
+                data={allCards[c.id]}
+                onRemove={(targetId) => onCardTap(targetId)}
+              />
+            ))}
           </div>
-        </div>
+        )}
       </footer>
     </div>
   )
