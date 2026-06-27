@@ -5,7 +5,10 @@ import {
   ref, onValue, get, set, update, remove,
   serverTimestamp, runTransaction, onDisconnect
 } from 'firebase/database'
-import { FEE, PAY, MIN_PLAYERS, MAX_CARDS, sanitizeKey } from '../utils.js'
+import { PAY, MIN_PLAYERS, MAX_CARDS, sanitizeKey } from '../utils.js'
+
+// Explicitly define 10 Birr as the default entry bet fee per request
+const FIXED_FEE = 10 
 
 let svrOff = 0
 onValue(ref(db, '.info/serverTimeOffset'), s => { svrOff = s.val() || 0 })
@@ -135,11 +138,13 @@ export default function CartelaPage() {
         const data = snap.val() || {}
         const activePlayerCount = Object.keys(data).length
         setPCount(activePlayerCount)
-        const updatedPrize = Math.floor(activePlayerCount * FEE * PAY)
+        
+        // Multiplied directly by fixed 10 Birr bet sizing array parameters
+        const updatedPrize = Math.floor(activePlayerCount * FIXED_FEE * (PAY || 0.8))
         setPrize(updatedPrize)
 
         if (!stateRef.current.gameActive) {
-          if (activePlayerCount >= MIN_PLAYERS) {
+          if (activePlayerCount >= 2) { 
             checkAndStartTimer(updatedPrize)
           } else {
             stopCountdown()
@@ -212,17 +217,15 @@ export default function CartelaPage() {
     const cardNumbers = nextCards.map(c => c.id)
     const cardsData   = nextCards.map(c => c.data)
     
-    // Atomically manage entry fee balance deduction / refund logic inside transactional layers
+    // Process exact balance deductions atomically using the 10 Birr profile configurations
     await runTransaction(ref(db, `users/${playerKey}/balance`), (currentBal) => {
       const balVal = currentBal ?? 0
-      // If expanding from 0 cards to joining, deduct the entry fee
       if (stateRef.current.selectedCards.length === 0 && nextCards.length > 0) {
-        if (balVal < FEE) return // Abort transaction if insufficient funds
-        return balVal - FEE
+        if (balVal < FIXED_FEE) return 
+        return balVal - FIXED_FEE
       }
-      // If removing all chosen cards, refund the transaction entry fee back safely
       if (stateRef.current.selectedCards.length > 0 && nextCards.length === 0) {
-        return balVal + FEE
+        return balVal + FIXED_FEE
       }
       return currentBal
     })
@@ -269,7 +272,7 @@ export default function CartelaPage() {
       nextCards.splice(existIdx, 1)
     } else {
       if (sc.length >= MAX_CARDS) return
-      if (stateRef.current.bal < FEE && sc.length === 0) return
+      if (stateRef.current.bal < FIXED_FEE && sc.length === 0) return
       nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } })
     }
 
@@ -278,11 +281,12 @@ export default function CartelaPage() {
   }
 
   async function checkAndStartTimer(currentPrize) {
-    if (stateRef.current.gameActive || stateRef.current.pCount < MIN_PLAYERS) return
+    if (stateRef.current.gameActive || stateRef.current.pCount < 2) return
     const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
     if (startAtSnap.val()) return
 
-    const startAt = now() + 3000 // 3 seconds rapid countdown trigger when >= 2 players join
+    // Configured for a 20-second lobby countdown phase once 2 players are active
+    const startAt = now() + 20000 
     await update(ref(db), {
       'lobby/gameStartAt': startAt,
       'game/meta': { gameId: gameIdRef.current, gameNum: gameNumRef.current, startTime: startAt, status: 'waiting', prizePool: currentPrize }
@@ -317,7 +321,9 @@ export default function CartelaPage() {
   }
 
   if (!user) return null
-  const numbersArray = Array.from({ length: 110 }, (_, i) => i + 1)
+  
+  // Expanded selector list array mapping for all 450 items
+  const numbersArray = Array.from({ length: 450 }, (_, i) => i + 1)
 
   return (
     <div style={{ background: '#02000a', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fafafa', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
@@ -356,7 +362,7 @@ export default function CartelaPage() {
         }
       `}</style>
 
-      {/* Primary Lobby Navigation Bar */}
+      {/* Navigation Header */}
       <nav style={{ background: '#090518', borderBottom: '1px solid #1e113b', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span style={{ fontSize: '13px', fontWeight: '800' }}>{profileName}</span>
@@ -367,11 +373,11 @@ export default function CartelaPage() {
         </div>
       </nav>
 
-      {/* Dynamic Network Status Strip Banner */}
+      {/* Real-time Game Info Strip */}
       <div style={{ background: '#0d0b21', padding: '8px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #1a1533' }}>
         <div style={{ display: 'flex', gap: '12px', fontSize: '11px', fontWeight: 'bold' }}>
           <span style={{ color: '#94a3b8' }}>PLAYERS: <span style={{ color: '#38bdf8' }}>{pCount}</span></span>
-          <span style={{ color: '#94a3b8' }}>EST. PRIZE: <span style={{ color: '#eab308' }}>{prize} ETB</span></span>
+          <span style={{ color: '#94a3b8' }}>TOTAL PRIZE: <span style={{ color: '#eab308' }}>{prize} ETB</span></span>
         </div>
         {cdSec !== null ? (
           <div style={{ background: '#ef4444', color: '#fff', fontSize: '11px', padding: '3px 8px', borderRadius: '4px', fontWeight: '900', letterSpacing: '0.5px' }}>
@@ -379,12 +385,12 @@ export default function CartelaPage() {
           </div>
         ) : (
           <span style={{ fontSize: '10px', color: '#64748b' }}>
-            {pCount < 2 ? 'Waiting for players...' : 'Ready'}
+            {pCount < 2 ? 'Waiting for 2 players to start...' : 'Ready'}
           </span>
         )}
       </div>
 
-      {/* Main Board Interactive Number Grid Container */}
+      {/* Number Matrix Scroll Section */}
       <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '4px' }}>
         <div className="grid-panel">
           {numbersArray.map(id => {
@@ -407,11 +413,11 @@ export default function CartelaPage() {
         </div>
       </div>
 
-      {/* Dynamic Mini-Grid Live Drawer Preview Footer */}
+      {/* Dynamic Drawer Preview Grid Footer Layout */}
       <footer style={{ flexShrink: 0, background: '#04020c', borderTop: '2px solid #120b29', padding: '12px', minHeight: '140px' }}>
         {selectedCards.length === 0 ? (
           <div style={{ textAlign: 'center', color: '#475569', fontSize: '11px', paddingTop: '20px' }}>
-            Tap a number from the grid above to lock and preview your cartela matrices
+            Tap a number (10 ETB per round) to view your matrix card
           </div>
         ) : (
           <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
