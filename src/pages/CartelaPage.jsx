@@ -17,7 +17,7 @@ function getUser() {
   try { return JSON.parse(localStorage.getItem('bingoUser') || 'null') } catch { return null }
 }
 
-// 1. Memoized Button component to prevent whole-grid layout thrashing
+// Memoized Individual Matrix Grid Button to isolate and prevent 450-element rendering lag
 const MatrixButton = React.memo(({ id, status, onClick }) => {
   return (
     <button
@@ -128,8 +128,8 @@ export default function CartelaPage() {
     })
   }, [user])
 
-  // 2. Dynamic multi-card balance calculator with instant execution properties
-  const syncSelectionWithDatabase = useCallback(async (nextCards) => {
+  // Precise background dynamic balance deduction and server updates
+  const syncSelectionWithDatabase = useCallback(async (nextCards, prevCards) => {
     if (!gameIdRef.current) {
       const snap = await get(ref(db, 'lobby/currentGameId'))
       let gid = snap.val()
@@ -149,18 +149,22 @@ export default function CartelaPage() {
       setGameNum(gameNumRef.current)
     }
 
-    const prevCount = stateRef.current.selectedCards.length
-    const nextCount = nextCards.map(c => c.id).length
+    const prevCount = prevCards.length
+    const nextCount = nextCards.length
     const diff = nextCount - prevCount
 
-    // Calculates exactly how much balance to change (+10 Birr refund or -10 Birr charge)
     if (diff !== 0) {
-      await runTransaction(ref(db, `users/${playerKey}/balance`), (currentBal) => {
+      const txnResult = await runTransaction(ref(db, `users/${playerKey}/balance`), (currentBal) => {
         const balVal = currentBal ?? 0
         const cost = diff * FIXED_FEE
-        if (cost > 0 && balVal < cost) return
+        if (cost > 0 && balVal < cost) return // Abort transaction if insufficient funds
         return balVal - cost
       })
+      // If balance deduction failed on transaction check, revert local UI selection changes
+      if (!txnResult.committed) {
+        setSelectedCards(prevCards)
+        return
+      }
     }
 
     const cardNumbers = nextCards.map(c => c.id)
@@ -196,6 +200,7 @@ export default function CartelaPage() {
     setJoined(true)
   }, [playerKey, user])
 
+  // Instant execution handler with optimistic state updates
   const onCardTap = useCallback((id) => {
     if (stateRef.current.gameActive) return
     const { taken: tk, selectedCards: sc, bal: currentBalance } = stateRef.current
@@ -208,13 +213,13 @@ export default function CartelaPage() {
       nextCards.splice(existIdx, 1)
     } else {
       if (sc.length >= MAX_CARDS) return
-      // Block transaction locally if player balance cannot support another 10 Birr card
       if (currentBalance < FIXED_FEE) return
       nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } })
     }
 
+    // Instantly update UI states locally before network resolves
     setSelectedCards(nextCards)
-    syncSelectionWithDatabase(nextCards).catch(err => console.error(err))
+    syncSelectionWithDatabase(nextCards, sc).catch(err => console.error(err))
   }, [allCards, syncSelectionWithDatabase, playerKey])
 
   useEffect(() => {
@@ -271,14 +276,16 @@ export default function CartelaPage() {
       }),
       onValue(ref(db, 'lobby/players'), snap => {
         const data = snap.val() || {}
-        const activePlayerCount = Object.keys(data).length
-        setPCount(activePlayerCount)
+        const activePlayers = Object.values(data)
+        setPCount(activePlayers.length)
         
-        const updatedPrize = Math.floor(activePlayerCount * FIXED_FEE * (PAY || 0.8))
+        // Calculate pool directly off total combined selected cartelas across all lobby players
+        const totalSelectedCartelas = activePlayers.reduce((acc, curr) => acc + (curr.cardCount || 0), 0)
+        const updatedPrize = Math.floor(totalSelectedCartelas * FIXED_FEE * (PAY || 0.8))
         setPrize(updatedPrize)
 
         if (!stateRef.current.gameActive) {
-          if (activePlayerCount >= 2) { 
+          if (activePlayers.length >= 2) { 
             checkAndStartTimer(updatedPrize)
           } else {
             stopCountdown()
@@ -352,7 +359,7 @@ export default function CartelaPage() {
           background: #192231;
           color: #a1b0cb;
           border: 1px solid rgba(255,255,255,0.03);
-          transition: transform 0.05s ease;
+          transition: transform 0.05s ease, background 0.1s ease;
         }
         .matrix-btn[data-status="selected"] {
           background: #ffffff !important;
@@ -360,11 +367,13 @@ export default function CartelaPage() {
           box-shadow: 0 0 14px rgba(255,255,255,0.9);
           transform: scale(0.96);
         }
+        /* Full solid crimson red styling for components taken by opponents */
         .matrix-btn[data-status="taken"] {
-          background: #0d0614 !important;
-          color: #ef4444 !important;
-          opacity: 0.2;
+          background: #ef4444 !important;
+          color: #ffffff !important;
+          box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
           cursor: not-allowed;
+          border: 1px solid #b91c1c;
         }
       `}</style>
 
