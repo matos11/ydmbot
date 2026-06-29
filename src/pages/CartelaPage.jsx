@@ -6,6 +6,7 @@ import { ref, onValue, get, update, runTransaction, serverTimestamp } from 'fire
 const FIXED_FEE = 10;
 const PAY_MARGIN = 0.8;
 const MIN_PLAYERS = 2;
+const MAX_SELECTION_LIMIT = 2; // Strict selection rule cap
 
 const sanitizeKey = (val) => (val || '').toString().replace(/[.#$[\]/]/g, '_');
 
@@ -50,7 +51,6 @@ export default function CartelaPage() {
   const stateRef = useRef({});
   stateRef.current = { selectedCards, gameActive, pCount, bal, taken, prize, playerKey, user };
 
-  // Fetch matrix structure
   useEffect(() => {
     get(ref(db, 'cartelas')).then(snap => {
       if (snap.exists()) {
@@ -63,7 +63,6 @@ export default function CartelaPage() {
     }).catch(() => setLoading(false));
   }, []);
 
-  // Atomic state tracking database transaction
   const syncSelection = useCallback(async (nextCards, prevCards) => {
     const pk = stateRef.current.playerKey;
     if (!pk) return;
@@ -117,7 +116,7 @@ export default function CartelaPage() {
     if (idx !== -1) {
       nextCards.splice(idx, 1);
     } else {
-      if (sc.length >= 4) return; 
+      if (sc.length >= MAX_SELECTION_LIMIT) return; // Prevent selection past max safety value
       if (currentBal < FIXED_FEE) return;
       nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } });
     }
@@ -126,7 +125,6 @@ export default function CartelaPage() {
     syncSelection(nextCards, sc).catch(console.error);
   }, [allCards, syncSelection]);
 
-  // Synchronized lifecycle loop 
   useEffect(() => {
     if (!playerKey) return;
 
@@ -150,7 +148,6 @@ export default function CartelaPage() {
         const totalCards = players.reduce((acc, p) => acc + (p.cardCount || 0), 0);
         setPrize(Math.floor(totalCards * FIXED_FEE * PAY_MARGIN));
 
-        // Edge monitoring optimization trigger: Handle multi-player sequence timers on backend
         if (count >= MIN_PLAYERS) {
           update(ref(db, 'activeGame'), { status: 'countdown' });
         } else {
@@ -175,13 +172,13 @@ export default function CartelaPage() {
     return () => unsubs.forEach(fn => fn());
   }, [playerKey, navigate]);
 
-  const numbersArray = useMemo(() => Array.from({ length: 90 }, (_, i) => i + 1), []);
+  // Scaled Upward to accommodate 450 items
+  const numbersArray = useMemo(() => Array.from({ length: 450 }, (_, i) => i + 1), []);
 
   return (
     <div style={{ background: '#060310', height: '100vh', display: 'flex', flexDirection: 'column', color: '#ffffff', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif', overflow: 'hidden' }}>
       <style>{`
         *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-        :root{--bg:#060310;--surface:rgba(255,255,255,0.04);--card:rgba(18,10,35,0.7);--border:rgba(255,255,255,0.10);--gold:#FFB800;--green:#00ff88;--red:#ff3366;--blue:#00d4ff;--purple:#9d4edd;--text:#ffffff;--dim:#7c8ca0;}
         nav{background:rgba(8,4,18,0.95);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(255,255,255,0.08);padding:7px 10px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;gap:6px;min-height:50px;}
         .nav-group{display:flex;align-items:center;gap:5px;flex-wrap:nowrap}
         .profile-pill{display:flex;flex-direction:column;justify-content:center;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.09);border-radius:9px;padding:4px 9px;max-width:88px;}
@@ -211,7 +208,7 @@ export default function CartelaPage() {
         .mini-table th{font-size:7.5px;font-weight:800;text-align:center;padding:1px 0}
         .mini-table th.b{color:#00d4ff}.mini-table th.i{color:#00ff88}.mini-table th.n{color:#FFB800}.mini-table th.g{color:#ff79c6}.mini-table th.o{color:#bd93f9}
         .mini-table td{height:17px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:3px;text-align:center;font-size:7.5px;font-weight:700;color:#fff}
-        .mini-table td.free{background:rgba(255,184,0,.14);border-color:#FFB800;color:#FFB800;font-weight:900}
+        .mini-table td.free{background:rgba(255,184,0,.14);border-color:#FFB800;color:#FFB800;font-size:9px;font-weight:900}
         .panel-empty{font-size:10.5px;color:#7c8ca0;text-align:center;width:100%;display:block;padding:8px 0;line-height:1.5}
         .loading-overlay{position:fixed;inset:0;background:#0b0b0f;display:flex;align-items:center;justify-content:center;z-index:9999;}
         .spinner{width:34px;height:34px;border:3px solid rgba(255,215,0,0.25);border-top-color:#ffb800;border-radius:50%;animation:spin .7s linear infinite;}
@@ -259,7 +256,7 @@ export default function CartelaPage() {
 
       <div className="scroll-area">
         <div className="status-row">
-          <div className="badge">👥 {pCount} Players</div>
+          <div className="badge">👥 {pCount} Players (Max 2 Cards)</div>
         </div>
         <div className="num-grid">
           {numbersArray.map(id => {
@@ -274,9 +271,9 @@ export default function CartelaPage() {
       <div className="panel">
         <div className="mini-grid">
           {selectedCards.length === 0 ? (
-            <span className="panel-empty">Tap a card number to select[cite: 1]</span>
+            <span className="panel-empty">Tap matrix values above to allocate up to 2 unique layouts.</span>
           ) : (
-            selectedCards.map((card, ci) => (
+            selectedCards.map((card) => (
               <div className="mini-wrap" key={card.id}>
                 <div className="mini-title">Card #{card.id}</div>
                 <table className="mini-table">
@@ -291,8 +288,9 @@ export default function CartelaPage() {
                     {Array.from({ length: 5 }).map((_, r) => (
                       <tr key={r}>
                         {['b', 'i', 'n', 'g', 'o'].map((col, c) => {
+                          // Centered Center Structural Star Logic
                           if (c === 2 && r === 2) {
-                            return <td key={c} className="free">FREE[cite: 1]</td>;
+                            return <td key={c} className="free">⭐</td>;
                           }
                           const colArr = card.data[col] || [];
                           const val = (c === 2) ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r];
