@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { db } from '../firebase.js'
 import {
   ref, onValue, get, set, update, remove,
   serverTimestamp, runTransaction
 } from 'firebase/database'
-import { PAY, MIN_PLAYERS, MAX_CARDS, sanitizeKey } from '../utils.js'
+import { PAY, MAX_CARDS, sanitizeKey } from '../utils.js'
 
 const FIXED_FEE = 10 
 
@@ -17,23 +17,35 @@ function getUser() {
   try { return JSON.parse(localStorage.getItem('bingoUser') || 'null') } catch { return null }
 }
 
-// Memoized MiniCard to completely prevent laggy grid-list re-renders
-const MiniCard = React.memo(({ data, id, onRemove }) => {
+// 1. Memoized Button component to prevent whole-grid layout thrashing
+const MatrixButton = React.memo(({ id, status, onClick }) => {
+  return (
+    <button
+      className="matrix-btn"
+      data-status={status}
+      disabled={status === "taken"}
+      onClick={() => onClick(id)}
+    >
+      {id}
+    </button>
+  )
+})
+
+function MiniCard({ data, id, onRemove }) {
   if (!data) return <div style={{ color: '#52525b', padding: '10px', fontSize: '11px' }}>Loading...</div>
   const cols = ['b', 'i', 'n', 'g', 'o']
   return (
     <div style={{ 
-      flex: '1 1 0',
-      minWidth: '160px',
+      flex: '0 0 auto',
+      width: '160px',
       background: '#0a0516', 
       border: '1px solid #2e1065',
       borderRadius: '12px', 
       padding: '10px',
-      position: 'relative',
       boxShadow: '0 4px 15px rgba(0,0,0,0.6)'
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-        <span style={{ color: '#00d8ff', fontWeight: '800', fontSize: '12px', letterSpacing: '0.5px' }}>Card {id}</span>
+        <span style={{ color: '#00d8ff', fontWeight: '800', fontSize: '12px' }}>Card {id}</span>
         <button 
           onClick={(e) => { e.stopPropagation(); onRemove(id); }}
           style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', border: 'none', borderRadius: '4px', padding: '2px 6px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer' }}
@@ -72,21 +84,7 @@ const MiniCard = React.memo(({ data, id, onRemove }) => {
       </div>
     </div>
   )
-})
-
-// Memoized Matrix Button to isolate styles and stop re-rendering all 450 items at once
-const MatrixButton = React.memo(({ id, status, onClick }) => {
-  return (
-    <button
-      className="matrix-btn"
-      data-status={status}
-      disabled={status === "taken"}
-      onClick={onClick}
-    >
-      {id}
-    </button>
-  )
-})
+}
 
 export default function CartelaPage() {
   const navigate = useNavigate()
@@ -104,7 +102,6 @@ export default function CartelaPage() {
   const [selectedCards, setSelectedCards] = useState([])
   const [bal, setBal]                     = useState(0)
   const [profileName, setProfileName]     = useState(user?.name || 'Player')
-  const [profileLbl, setProfileLbl]       = useState('@player')
   const [pCount, setPCount]               = useState(0)
   const [joined, setJoined]               = useState(false)
   const [gameActive, setGameActive]       = useState(false)
@@ -119,7 +116,6 @@ export default function CartelaPage() {
   const gameIdRef = useRef(null)
   const gameNumRef = useRef(1)
 
-  // Fetch matrix pool setup instantly without manual blocking-loaders
   useEffect(() => {
     if (!user) return
     get(ref(db, 'cartelas')).then(snap => {
@@ -132,8 +128,135 @@ export default function CartelaPage() {
     })
   }, [user])
 
+  // 2. Dynamic multi-card balance calculator with instant execution properties
+  const syncSelectionWithDatabase = useCallback(async (nextCards) => {
+    if (!gameIdRef.current) {
+      const snap = await get(ref(db, 'lobby/currentGameId'))
+      let gid = snap.val()
+      if (!gid) {
+        gid = `BNG-${Math.random().toString(36).substring(2, 10).toUpperCase()}`
+        const txn = await runTransaction(ref(db, 'meta/gameCounter'), c => (c || 0) + 1)
+        gameNumRef.current = txn.snapshot.val()
+        await Promise.all([
+          set(ref(db, 'lobby/currentGameId'), gid),
+          set(ref(db, 'lobby/currentGameNum'), gameNumRef.current)
+        ])
+      } else {
+        const numSnap = await get(ref(db, 'lobby/currentGameNum'))
+        gameNumRef.current = numSnap.val() || 1
+      }
+      gameIdRef.current = gid
+      setGameNum(gameNumRef.current)
+    }
+
+    const prevCount = stateRef.current.selectedCards.length
+    const nextCount = nextCards.map(c => c.id).length
+    const diff = nextCount - prevCount
+
+    // Calculates exactly how much balance to change (+10 Birr refund or -10 Birr charge)
+    if (diff !== 0) {
+      await runTransaction(ref(db, `users/${playerKey}/balance`), (currentBal) => {
+        const balVal = currentBal ?? 0
+        const cost = diff * FIXED_FEE
+        if (cost > 0 && balVal < cost) return
+        return balVal - cost
+      })
+    }
+
+    const cardNumbers = nextCards.map(c => c.id)
+    const cardsData   = nextCards.map(c => c.data)
+    const updates = {}
+
+    Object.keys(stateRef.current.taken).forEach(k => {
+      if (stateRef.current.taken[k] === playerKey) updates[`lobby/takenCards/${k}`] = null
+    })
+
+    if (cardNumbers.length === 0) {
+      updates[`lobby/players/${playerKey}`] = null
+      updates[`lobby/playerCards/${playerKey}`] = null
+      updates[`lobby/presence/${playerKey}`] = null
+      setJoined(false)
+      await update(ref(db), updates)
+      return
+    }
+
+    cardNumbers.forEach(id => { updates[`lobby/takenCards/${id}`] = playerKey })
+    updates[`lobby/players/${playerKey}`] = {
+      name: user.name || 'Player',
+      cartelas: cardNumbers,
+      phone: user.phone || '',
+      joinedAt: serverTimestamp(),
+      gameId: gameIdRef.current,
+      cardCount: cardNumbers.length,
+      active: true
+    }
+    updates[`lobby/playerCards/${playerKey}`] = { cardNumbers, cardsData, gameId: gameIdRef.current }
+    
+    await update(ref(db), updates)
+    setJoined(true)
+  }, [playerKey, user])
+
+  const onCardTap = useCallback((id) => {
+    if (stateRef.current.gameActive) return
+    const { taken: tk, selectedCards: sc, bal: currentBalance } = stateRef.current
+    if (tk[id] && tk[id] !== playerKey) return
+    
+    const existIdx = sc.findIndex(c => c.id === id)
+    let nextCards = [...sc]
+
+    if (existIdx !== -1) {
+      nextCards.splice(existIdx, 1)
+    } else {
+      if (sc.length >= MAX_CARDS) return
+      // Block transaction locally if player balance cannot support another 10 Birr card
+      if (currentBalance < FIXED_FEE) return
+      nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } })
+    }
+
+    setSelectedCards(nextCards)
+    syncSelectionWithDatabase(nextCards).catch(err => console.error(err))
+  }, [allCards, syncSelectionWithDatabase, playerKey])
+
   useEffect(() => {
     if (!user || !playerKey) return
+
+    const triggerGameStart = () => {
+      if (stateRef.current.gameActive) return
+      setGameActive(true)
+      navigate(stateRef.current.joined ? '/game' : '/game?spectator=true', { replace: true })
+    }
+
+    const startCountdown = (sec) => {
+      if (cdTimer.current) clearInterval(cdTimer.current)
+      setCdSec(Math.max(sec, 0))
+      let t = Math.max(sec, 0)
+      cdTimer.current = setInterval(() => {
+        t--
+        setCdSec(t)
+        if (t <= 0) { 
+          clearInterval(cdTimer.current)
+          cdTimer.current = null
+          triggerGameStart() 
+        }
+      }, 1000)
+    }
+
+    const stopCountdown = () => {
+      if (cdTimer.current) { clearInterval(cdTimer.current); cdTimer.current = null }
+      setCdSec(null)
+    }
+
+    const checkAndStartTimer = async (currentPrize) => {
+      if (stateRef.current.gameActive || stateRef.current.pCount < 2) return
+      const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
+      if (startAtSnap.val()) return
+
+      const startAt = now() + 20000 
+      await update(ref(db), {
+        'lobby/gameStartAt': startAt,
+        'game/meta': { gameId: gameIdRef.current, gameNum: gameNumRef.current, startTime: startAt, status: 'waiting', prizePool: currentPrize }
+      })
+    }
 
     const unsubscribes = [
       onValue(ref(db, `users/${playerKey}`), snap => {
@@ -141,7 +264,6 @@ export default function CartelaPage() {
           const u = snap.val()
           setBal(u.balance ?? 0)
           setProfileName(u.first_name || u.name || 'Player')
-          if (u.username) setProfileLbl('@' + u.username)
         }
       }),
       onValue(ref(db, 'lobby/takenCards'), snap => {
@@ -177,12 +299,14 @@ export default function CartelaPage() {
       }),
       onValue(ref(db, 'game/status'), snap => {
         if (snap.val() === 'started' && !stateRef.current.gameActive) {
-          setGameActive(true)
-          navigate(stateRef.current.joined ? '/game' : '/game?spectator=true')
+          triggerGameStart()
         }
       })
     ]
-    return () => unsubscribes.forEach(unsub => unsub())
+    return () => {
+      unsubscribes.forEach(unsub => unsub())
+      if (cdTimer.current) clearInterval(cdTimer.current)
+    }
   }, [playerKey, navigate, user])
 
   useEffect(() => {
@@ -203,150 +327,9 @@ export default function CartelaPage() {
     restoreSession()
   }, [allCards, playerKey, user])
 
-  async function getOrCreateGameId() {
-    if (gameIdRef.current) return gameIdRef.current
-    const snap = await get(ref(db, 'lobby/currentGameId'))
-    let gid = snap.val()
-    if (!gid) {
-      gid = `BNG-${Math.random().toString(36).substring(2, 10).toUpperCase()}`
-      const txn = await runTransaction(ref(db, 'meta/gameCounter'), c => (c || 0) + 1)
-      gameNumRef.current = txn.snapshot.val()
-      await Promise.all([
-        set(ref(db, 'lobby/currentGameId'), gid),
-        set(ref(db, 'lobby/currentGameNum'), gameNumRef.current)
-      ])
-    } else {
-      const numSnap = await get(ref(db, 'lobby/currentGameNum'))
-      gameNumRef.current = numSnap.val() || 1
-    }
-    gameIdRef.current = gid
-    setGameNum(gameNumRef.current)
-    return gid
-  }
-
-  async function syncSelectionWithDatabase(nextCards, isAdding) {
-    await getOrCreateGameId()
-    const cardNumbers = nextCards.map(c => c.id)
-    const cardsData   = nextCards.map(c => c.data)
-    
-    // Process exact balance deductions atomically
-    await runTransaction(ref(db, `users/${playerKey}/balance`), (currentBal) => {
-      const balVal = currentBal ?? 0
-      if (isAdding && nextCards.length === 1) {
-        if (balVal < FIXED_FEE) return 
-        return balVal - FIXED_FEE
-      }
-      if (!isAdding && nextCards.length === 0) {
-        return balVal + FIXED_FEE
-      }
-      return currentBal
-    })
-
-    const updates = {}
-    Object.keys(stateRef.current.taken).forEach(k => {
-      if (stateRef.current.taken[k] === playerKey) updates[`lobby/takenCards/${k}`] = null
-    })
-
-    if (cardNumbers.length === 0) {
-      updates[`lobby/players/${playerKey}`] = null
-      updates[`lobby/playerCards/${playerKey}`] = null
-      updates[`lobby/presence/${playerKey}`] = null
-      setJoined(false)
-      await update(ref(db), updates)
-      return
-    }
-
-    cardNumbers.forEach(id => { updates[`lobby/takenCards/${id}`] = playerKey })
-    updates[`lobby/players/${playerKey}`] = {
-      name: user.name || 'Player',
-      cartelas: cardNumbers,
-      phone: user.phone || '',
-      joinedAt: serverTimestamp(),
-      gameId: gameIdRef.current,
-      cardCount: cardNumbers.length,
-      active: true
-    }
-    updates[`lobby/playerCards/${playerKey}`] = { cardNumbers, cardsData, gameId: gameIdRef.current }
-    
-    await update(ref(db), updates)
-    setJoined(true)
-  }
-
-  async function onCardTap(id) {
-    if (stateRef.current.gameActive) return
-    const { taken: tk, selectedCards: sc } = stateRef.current
-    if (tk[id] && tk[id] !== playerKey) return
-    
-    const existIdx = sc.findIndex(c => c.id === id)
-    let nextCards = [...sc]
-    let isAdding = false
-
-    if (existIdx !== -1) {
-      nextCards.splice(existIdx, 1)
-    } else {
-      if (sc.length >= MAX_CARDS) return
-      if (stateRef.current.bal < FIXED_FEE && sc.length === 0) return
-      isAdding = true
-      nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } })
-    }
-
-    // Optimistic state change: update state BEFORE sending network request to make the button tap smooth
-    setSelectedCards(nextCards)
-    
-    try {
-      await syncSelectionWithDatabase(nextCards, isAdding)
-    } catch (err) {
-      console.error("Sync failed, reverting choice", err)
-      setSelectedCards(sc) // Rollback seamlessly on failure
-    }
-  }
-
-  async function checkAndStartTimer(currentPrize) {
-    if (stateRef.current.gameActive || stateRef.current.pCount < 2) return
-    const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
-    if (startAtSnap.val()) return
-
-    const startAt = now() + 20000 
-    await update(ref(db), {
-      'lobby/gameStartAt': startAt,
-      'game/meta': { gameId: gameIdRef.current, gameNum: gameNumRef.current, startTime: startAt, status: 'waiting', prizePool: currentPrize }
-    })
-  }
-
-  function startCountdown(sec) {
-    if (cdTimer.current) clearInterval(cdTimer.current)
-    setCdSec(Math.max(sec, 0))
-    let t = Math.max(sec, 0)
-    cdTimer.current = setInterval(() => {
-      t--
-      setCdSec(t)
-      if (t <= 0) { 
-        clearInterval(cdTimer.current)
-        cdTimer.current = null
-        triggerGameStart() 
-      }
-    }, 1000)
-  }
-
-  function stopCountdown() {
-    if (cdTimer.current) { clearInterval(cdTimer.current); cdTimer.current = null }
-    setCdSec(null)
-  }
-
-  async function triggerGameStart() {
-    if (stateRef.current.gameActive) return
-    setGameActive(true)
-    if (stateRef.current.joined) {
-      await update(ref(db), { 'game/status': 'started', 'game/meta/started': true })
-      navigate('/game')
-    } else {
-      navigate('/game?spectator=true')
-    }
-  }
+  const numbersArray = useMemo(() => Array.from({ length: 450 }, (_, i) => i + 1), [])
 
   if (!user) return null
-  
-  const numbersArray = Array.from({ length: 450 }, (_, i) => i + 1)
 
   return (
     <div style={{ background: '#02000a', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#fafafa', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
@@ -358,7 +341,6 @@ export default function CartelaPage() {
           gap: 6px;
           background: #030111;
           padding: 8px;
-          content-visibility: auto; /* Browser native rendering optimization for long lists */
         }
         .matrix-btn {
           padding: 10px 0;
@@ -370,12 +352,13 @@ export default function CartelaPage() {
           background: #192231;
           color: #a1b0cb;
           border: 1px solid rgba(255,255,255,0.03);
-          transform: translateZ(0); /* Hardware accelerated layer generation */
+          transition: transform 0.05s ease;
         }
         .matrix-btn[data-status="selected"] {
           background: #ffffff !important;
           color: #000000 !important;
           box-shadow: 0 0 14px rgba(255,255,255,0.9);
+          transform: scale(0.96);
         }
         .matrix-btn[data-status="taken"] {
           background: #0d0614 !important;
@@ -413,7 +396,7 @@ export default function CartelaPage() {
         )}
       </div>
 
-      {/* Number Matrix Scroll Section */}
+      {/* Number Matrix Scroll Panel */}
       <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '4px' }}>
         <div className="grid-panel">
           {numbersArray.map(id => {
@@ -426,18 +409,25 @@ export default function CartelaPage() {
                 key={id}
                 id={id}
                 status={status}
-                onClick={() => onCardTap(id)}
+                onClick={onCardTap}
               />
             )
           })}
         </div>
       </div>
 
-      {/* Dynamic Drawer Preview Grid Footer Layout */}
+      {/* Dynamic Footer with Bet Amount Tracking Display */}
       <footer style={{ flexShrink: 0, background: '#04020c', borderTop: '2px solid #120b29', padding: '12px', minHeight: '140px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', fontSize: '11px', color: '#94a3b8', fontWeight: 'bold', padding: '0 4px' }}>
+          <span>Entry Fee: 10 ETB / card</span>
+          {selectedCards.length > 0 && (
+            <span style={{ color: '#facc15' }}>Total Bet: {selectedCards.length * FIXED_FEE} ETB</span>
+          )}
+        </div>
+
         {selectedCards.length === 0 ? (
-          <div style={{ textAlign: 'center', color: '#475569', fontSize: '11px', paddingTop: '20px' }}>
-            Tap a number (10 ETB per round) to view your matrix card
+          <div style={{ textAlign: 'center', color: '#475569', fontSize: '11px', paddingTop: '10px' }}>
+            Tap a number above to select your matrix card
           </div>
         ) : (
           <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
@@ -446,7 +436,7 @@ export default function CartelaPage() {
                 key={c.id}
                 id={c.id}
                 data={allCards[c.id]}
-                onRemove={(targetId) => onCardTap(targetId)}
+                onRemove={onCardTap}
               />
             ))}
           </div>
