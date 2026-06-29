@@ -148,7 +148,7 @@ export default function CartelaPage() {
         const totalCards = players.reduce((acc, p) => acc + (p.cardCount || 0), 0);
         setPrize(Math.floor(totalCards * FIXED_FEE * PAY_MARGIN));
 
-        // Atomic Transaction initialization: triggers if status is anything other than countdown/started
+        // Atomic Transaction initialization
         if (count >= MIN_PLAYERS) {
           runTransaction(ref(db, 'activeGame'), (currentData) => {
             if (!currentData) {
@@ -162,7 +162,6 @@ export default function CartelaPage() {
             return currentData;
           });
         } else {
-          // Reset when room falls below 2 players
           update(ref(db, 'activeGame'), { status: 'waiting', countdownSec: null });
         }
       }),
@@ -182,8 +181,18 @@ export default function CartelaPage() {
       }),
       onValue(ref(db, 'activeGame/status'), snap => {
         if (snap.val() === 'started') {
+          // Save complex selected cartelas to localStorage
           localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
-          navigate('/game');
+          
+          // Formulate light numeric state query targets
+          const params = new URLSearchParams({
+            players: stateRef.current.pCount.toString(),
+            bet: FIXED_FEE.toString(),
+            derash: stateRef.current.prize.toString()
+          });
+          
+          // Hand-off control pipeline to GamePage with query items attached
+          navigate(`/game?${params.toString()}`);
         }
       })
     ];
