@@ -3,11 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { db } from '../firebase.js'
 import {
   ref, onValue, get, set, update, remove,
-  serverTimestamp, runTransaction, onDisconnect
+  serverTimestamp, runTransaction
 } from 'firebase/database'
 import { PAY, MIN_PLAYERS, MAX_CARDS, sanitizeKey } from '../utils.js'
 
-// Explicitly define 10 Birr as the default entry bet fee per request
 const FIXED_FEE = 10 
 
 let svrOff = 0
@@ -18,7 +17,8 @@ function getUser() {
   try { return JSON.parse(localStorage.getItem('bingoUser') || 'null') } catch { return null }
 }
 
-function MiniCard({ data, id, onRemove }) {
+// Memoized MiniCard to completely prevent laggy grid-list re-renders
+const MiniCard = React.memo(({ data, id, onRemove }) => {
   if (!data) return <div style={{ color: '#52525b', padding: '10px', fontSize: '11px' }}>Loading...</div>
   const cols = ['b', 'i', 'n', 'g', 'o']
   return (
@@ -72,7 +72,21 @@ function MiniCard({ data, id, onRemove }) {
       </div>
     </div>
   )
-}
+})
+
+// Memoized Matrix Button to isolate styles and stop re-rendering all 450 items at once
+const MatrixButton = React.memo(({ id, status, onClick }) => {
+  return (
+    <button
+      className="matrix-btn"
+      data-status={status}
+      disabled={status === "taken"}
+      onClick={onClick}
+    >
+      {id}
+    </button>
+  )
+})
 
 export default function CartelaPage() {
   const navigate = useNavigate()
@@ -97,7 +111,6 @@ export default function CartelaPage() {
   const [cdSec, setCdSec]                 = useState(null)
   const [prize, setPrize]                 = useState(0)
   const [gameNum, setGameNum]             = useState('--')
-  const [loading, setLoading]             = useState(true)
 
   const stateRef = useRef({})
   stateRef.current = { selectedCards, joined, gameActive, pCount, bal, taken, prize }
@@ -106,6 +119,7 @@ export default function CartelaPage() {
   const gameIdRef = useRef(null)
   const gameNumRef = useRef(1)
 
+  // Fetch matrix pool setup instantly without manual blocking-loaders
   useEffect(() => {
     if (!user) return
     get(ref(db, 'cartelas')).then(snap => {
@@ -115,8 +129,7 @@ export default function CartelaPage() {
         Object.keys(data).forEach(k => { mapped[Number(k)] = data[k] })
         setAllCards(mapped)
       }
-      setLoading(false)
-    }).catch(() => setLoading(false))
+    })
   }, [user])
 
   useEffect(() => {
@@ -139,7 +152,6 @@ export default function CartelaPage() {
         const activePlayerCount = Object.keys(data).length
         setPCount(activePlayerCount)
         
-        // Multiplied directly by fixed 10 Birr bet sizing array parameters
         const updatedPrize = Math.floor(activePlayerCount * FIXED_FEE * (PAY || 0.8))
         setPrize(updatedPrize)
 
@@ -212,19 +224,19 @@ export default function CartelaPage() {
     return gid
   }
 
-  async function syncSelectionWithDatabase(nextCards) {
+  async function syncSelectionWithDatabase(nextCards, isAdding) {
     await getOrCreateGameId()
     const cardNumbers = nextCards.map(c => c.id)
     const cardsData   = nextCards.map(c => c.data)
     
-    // Process exact balance deductions atomically using the 10 Birr profile configurations
+    // Process exact balance deductions atomically
     await runTransaction(ref(db, `users/${playerKey}/balance`), (currentBal) => {
       const balVal = currentBal ?? 0
-      if (stateRef.current.selectedCards.length === 0 && nextCards.length > 0) {
+      if (isAdding && nextCards.length === 1) {
         if (balVal < FIXED_FEE) return 
         return balVal - FIXED_FEE
       }
-      if (stateRef.current.selectedCards.length > 0 && nextCards.length === 0) {
+      if (!isAdding && nextCards.length === 0) {
         return balVal + FIXED_FEE
       }
       return currentBal
@@ -267,17 +279,26 @@ export default function CartelaPage() {
     
     const existIdx = sc.findIndex(c => c.id === id)
     let nextCards = [...sc]
+    let isAdding = false
 
     if (existIdx !== -1) {
       nextCards.splice(existIdx, 1)
     } else {
       if (sc.length >= MAX_CARDS) return
       if (stateRef.current.bal < FIXED_FEE && sc.length === 0) return
+      isAdding = true
       nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } })
     }
 
+    // Optimistic state change: update state BEFORE sending network request to make the button tap smooth
     setSelectedCards(nextCards)
-    syncSelectionWithDatabase(nextCards).catch(err => console.error(err))
+    
+    try {
+      await syncSelectionWithDatabase(nextCards, isAdding)
+    } catch (err) {
+      console.error("Sync failed, reverting choice", err)
+      setSelectedCards(sc) // Rollback seamlessly on failure
+    }
   }
 
   async function checkAndStartTimer(currentPrize) {
@@ -285,7 +306,6 @@ export default function CartelaPage() {
     const startAtSnap = await get(ref(db, 'lobby/gameStartAt'))
     if (startAtSnap.val()) return
 
-    // Configured for a 20-second lobby countdown phase once 2 players are active
     const startAt = now() + 20000 
     await update(ref(db), {
       'lobby/gameStartAt': startAt,
@@ -300,7 +320,11 @@ export default function CartelaPage() {
     cdTimer.current = setInterval(() => {
       t--
       setCdSec(t)
-      if (t <= 0) { clearInterval(cdTimer.current); cdTimer.current = null; triggerGameStart() }
+      if (t <= 0) { 
+        clearInterval(cdTimer.current)
+        cdTimer.current = null
+        triggerGameStart() 
+      }
     }, 1000)
   }
 
@@ -322,7 +346,6 @@ export default function CartelaPage() {
 
   if (!user) return null
   
-  // Expanded selector list array mapping for all 450 items
   const numbersArray = Array.from({ length: 450 }, (_, i) => i + 1)
 
   return (
@@ -335,6 +358,7 @@ export default function CartelaPage() {
           gap: 6px;
           background: #030111;
           padding: 8px;
+          content-visibility: auto; /* Browser native rendering optimization for long lists */
         }
         .matrix-btn {
           padding: 10px 0;
@@ -346,13 +370,12 @@ export default function CartelaPage() {
           background: #192231;
           color: #a1b0cb;
           border: 1px solid rgba(255,255,255,0.03);
-          transition: transform 0.05s ease;
+          transform: translateZ(0); /* Hardware accelerated layer generation */
         }
         .matrix-btn[data-status="selected"] {
           background: #ffffff !important;
           color: #000000 !important;
           box-shadow: 0 0 14px rgba(255,255,255,0.9);
-          transform: scale(0.96);
         }
         .matrix-btn[data-status="taken"] {
           background: #0d0614 !important;
@@ -399,15 +422,12 @@ export default function CartelaPage() {
             else if (taken[id]) status = "taken"
 
             return (
-              <button
+              <MatrixButton
                 key={id}
-                className="matrix-btn"
-                data-status={status}
-                disabled={status === "taken"}
+                id={id}
+                status={status}
                 onClick={() => onCardTap(id)}
-              >
-                {id}
-              </button>
+              />
             )
           })}
         </div>

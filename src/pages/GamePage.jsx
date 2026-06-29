@@ -1,1136 +1,787 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { db } from '../firebase.js'
-import {
-  ref, onValue, off, get, set, push, update, remove,
-  serverTimestamp, runTransaction, onDisconnect, onChildAdded
-} from 'firebase/database'
-import {
-  colClass, letter, bubClass, sanitizeKey,
-  PATTERNS, playNum, playWinnerSound, startFireworks, REDIRECT_SEC
-} from '../utils.js'
+import { ref, onValue, set, get, update, serverTimestamp, push, remove } from 'firebase/database'
+import { sanitizeKey } from '../utils.js'
 
-// ── Loading Screen ────────────────────────────────────────
-function LoadingScreen() {
+// ── Game End Message Component ──────────────────────────────
+const GameEndMessage = React.memo(({ reason, onDismiss }) => {
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, 5000)
+    return () => clearTimeout(timer)
+  }, [onDismiss])
+
+  const messages = {
+    'all_numbers_drawn': {
+      icon: '📊',
+      title: 'ሙሉ ሙከራ ምንም አሸናፊ ሊታይ ነበረበት',
+      subtitle: 'No winner this round!',
+      description: 'All 75 numbers were drawn but nobody claimed BINGO. Better luck in the next game!',
+      color: '#FF6B6B',
+      bgColor: '#FFE5E5'
+    },
+    'no_winner': {
+      icon: '🏁',
+      title: 'ሽልማቱ አልተወሰደም',
+      subtitle: 'Prize unclaimed',
+      description: 'The game has ended. Ready to play another round?',
+      color: '#FFA500',
+      bgColor: '#FFE8CC'
+    },
+    'game_ended': {
+      icon: '🎮',
+      title: 'ጨዋታ ወደ መጨረሻ ደረሰ',
+      subtitle: 'Game finished',
+      description: 'Ready for another thrilling round of BINGO?',
+      color: '#4ECDC4',
+      bgColor: '#E0F7F6'
+    }
+  }
+
+  const msg = messages[reason]
+  if (!msg) return null
+
   return (
     <div style={{
-      width: '100vw',
-      height: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
-      color: '#fff',
-      fontFamily: 'Poppins, sans-serif'
+      position: 'fixed',
+      top: '20px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      width: '90%',
+      maxWidth: '500px',
+      padding: '16px',
+      background: msg.bgColor,
+      border: `2px solid ${msg.color}`,
+      borderRadius: '12px',
+      textAlign: 'center',
+      zIndex: 999,
+      animation: 'slideDown 0.3s ease-out',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
     }}>
-      <div style={{ marginBottom: '30px', fontSize: '48px' }}>🎲</div>
-      <h2 style={{ marginBottom: '10px', fontSize: '24px' }}>ጨዋታ በመጭነት ላይ</h2>
-      <p style={{ marginBottom: '30px', color: '#aaa', fontSize: '14px' }}>Game Loading...</p>
-      <div style={{
-        width: '40px',
-        height: '40px',
-        border: '4px solid #ffd700',
-        borderTop: '4px solid transparent',
-        borderRadius: '50%',
-        animation: 'spin 1s linear infinite'
-      }}></div>
       <style>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
+        @keyframes slideDown {
+          from {
+            opacity: 0;
+            transform: translateX(-50%) translateY(-20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+          }
         }
       `}</style>
+      <div style={{ fontSize: '36px', marginBottom: '12px' }}>{msg.icon}</div>
+      <h3 style={{
+        margin: '0 0 4px 0',
+        color: msg.color,
+        fontSize: '18px',
+        fontWeight: 700
+      }}>
+        {msg.title}
+      </h3>
+      <p style={{
+        margin: '0 0 8px 0',
+        color: '#666',
+        fontSize: '13px',
+        fontWeight: 600
+      }}>
+        {msg.subtitle}
+      </p>
+      <p style={{
+        margin: '0',
+        color: '#555',
+        fontSize: '12px',
+        lineHeight: '1.4'
+      }}>
+        {msg.description}
+      </p>
     </div>
   )
-}
+})
 
-// ── Error Screen ──────────────────────────────────────────
-function ErrorScreen({ message, onRetry }) {
+// ── Loading Skeleton ────────────────────────────────────────
+const SkeletonLoader = () => (
+  <div style={{
+    width: '100%',
+    height: '120px',
+    background: 'linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%)',
+    backgroundSize: '200% 100%',
+    animation: 'loading 1.5s infinite',
+    borderRadius: '8px',
+    marginBottom: '12px'
+  }}>
+    <style>{`
+      @keyframes loading {
+        0% { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+      }
+    `}</style>
+  </div>
+)
+
+// ── Player Info Card ────────────────────────────────────────
+const PlayerCard = React.memo(({ user, balance }) => {
+  if (!user) return <SkeletonLoader />
+
   return (
     <div style={{
-      width: '100vw',
-      height: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+      padding: '16px',
+      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      borderRadius: '12px',
       color: '#fff',
-      fontFamily: 'Poppins, sans-serif',
-      padding: '20px'
+      marginBottom: '20px',
+      boxShadow: '0 4px 12px rgba(102, 126, 234, 0.4)'
     }}>
-      <div style={{ marginBottom: '30px', fontSize: '48px' }}>⚠️</div>
-      <h2 style={{ marginBottom: '10px', fontSize: '24px' }}>ስህተት ተከስቷል</h2>
-      <p style={{ marginBottom: '20px', color: '#aaa', fontSize: '14px', textAlign: 'center', maxWidth: '300px' }}>
-        {message}
-      </p>
-      <button
-        onClick={onRetry}
-        style={{
-          padding: '12px 30px',
-          background: '#ffd700',
-          color: '#000',
-          border: 'none',
-          borderRadius: '8px',
-          fontWeight: 'bold',
-          cursor: 'pointer',
-          fontSize: '16px'
-        }}
-      >
-        🔄 ድንሳ ሞክር
-      </button>
-    </div>
-  )
-}
-
-// ── Constants ─────────────────────────────────────────────
-const MIN_PLAYERS   = 2
-const DRAW_INTERVAL = 3000
-
-// ── Winner overlay card table ─────────────────────────────
-function WoTable({ flat, pi, drawn }) {
-  const rows = []
-  for (let r = 0; r < 5; r++) {
-    const cells = []
-    for (let c = 0; c < 5; c++) {
-      const idx = r * 5 + c
-      const v   = flat[idx] || ''
-      let cls = ''
-      if (v === 'FREE' || idx === 12) cls = 'wc-free'
-      else if (pi && pi.includes(idx)) cls = 'wc-win'
-      else if (drawn.includes(parseInt(v))) cls = 'wc-called'
-      cells.push(<td key={c} className={cls}>{v === 'FREE' ? 'F' : v}</td>)
-    }
-    rows.push(<tr key={r}>{cells}</tr>)
-  }
-  return (
-    <table className="wo-tbl">
-      <thead><tr><th>B</th><th>I</th><th>N</th><th>G</th><th>O</th></tr></thead>
-      <tbody>{rows}</tbody>
-    </table>
-  )
-}
-
-// ── Bingo card table ──────────────────────────────────────
-function BingoCard({ card, cardNum, ci, drawn, markedSet, autoMode, gameActive, gameEnded, onManualMark, onClaim, winBlink, claimReady }) {
-  const cols = ['b','i','n','g','o']
-  const rows = []
-  for (let r = 0; r < 5; r++) {
-    const cells = []
-    for (let c = 0; c < 5; c++) {
-      const idx = r * 5 + c
-      if (idx === 12) {
-        cells.push(<td key={c} className="free" data-val="FREE">F</td>)
-        continue
-      }
-      const colArr = card[cols[c]]
-      const val    = c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r]
-      const numVal = parseInt(val)
-      const isCalled  = drawn.includes(numVal)
-      const isMarked  = markedSet.has(idx)
-      let tdClass = ''
-      if (winBlink && winBlink.includes(idx)) {
-        tdClass = 'win-blink'
-      } else if (isMarked) {
-        tdClass = `marked ${autoMode ? 'auto-marked' : 'manual-marked'}`
-      } else if (isCalled && !autoMode) {
-        tdClass = 'callable'
-      }
-      const handleClick = (!autoMode && isCalled && !isMarked && gameActive && !gameEnded)
-        ? () => onManualMark(ci, idx, numVal)
-        : undefined
-      cells.push(
-        <td key={c} className={tdClass} data-val={val} data-idx={idx} onClick={handleClick}>{val}</td>
-      )
-    }
-    rows.push(<tr key={r}>{cells}</tr>)
-  }
-  return (
-    <div className="card-block" id={`cb${ci}`}>
-      <table className="ct" id={`ct${ci}`}>
-        <thead>
-          <tr>{cols.map(c => <th key={c} className={c}>{c.toUpperCase()}</th>)}</tr>
-        </thead>
-        <tbody>{rows}</tbody>
-      </table>
-      <div className="card-lbl">Card {cardNum}</div>
-      <button
-        className={`claim-btn${claimReady ? ' ready' : ''}`}
-        onClick={() => onClaim(ci)}
-        disabled={autoMode || !claimReady || gameEnded}
-      >
-        {autoMode
-          ? (claimReady ? '🎉 BINGO!' : 'Auto ✓')
-          : (claimReady ? '🎉 CLAIM BINGO!' : 'BINGO')
-        }
-      </button>
-    </div>
-  )
-}
-
-// ── Winner Overlay ────────────────────────────────────────
-function WinnerOverlay({ show, winners, playerKey, currentPrize, drawn, cdSec }) {
-  const canvasRef = useRef(null)
-  const fireworksStarted = useRef(false)
-
-  useEffect(() => {
-    if (show && canvasRef.current && !fireworksStarted.current) {
-      fireworksStarted.current = true
-      startFireworks(canvasRef.current)
-    }
-  }, [show])
-
-  if (!winners || !winners.length) return null
-
-  const total      = winners.length
-  const split      = Math.floor(currentPrize / total)
-  const myWins     = winners.filter(w => w.playerKey === playerKey)
-  const iWon       = myWins.length > 0
-  const myShare    = split * myWins.length
-
-  // Names line
-  const first      = winners[0]
-  const fPhone     = first.phone || ''
-  const maskedFirst = fPhone.length > 4 ? fPhone.slice(0,2) + '*' + fPhone.slice(-4) : fPhone
-  const otherCount = total - 1
-
-  return (
-    <div className={`winner-overlay${show ? ' show' : ''}`}>
-      <canvas id="celebCanvas" ref={canvasRef} />
-      <div className="wo-darkbg" />
-      <div className="wo-content">
-        <div className="wo-header">
-          <div className="wo-bingo-line">🎉 BINGO!</div>
-
-          {iWon && (
-            <div className="wo-you-badge show">
-              <span className="wo-you-crown">👑</span>
-              <span className="wo-you-txt">YOU ARE A WINNER!</span>
-              <span className="wo-you-prize">{myShare} ETB</span>
-            </div>
-          )}
-
-          <div className="wo-names-line">
-            <span className={`wo-name-chip${first.playerKey === playerKey ? ' mine' : ''}`}>
-              {first.name || 'Anonymous'} ({maskedFirst})
-            </span>
-            {otherCount === 1 && (() => {
-              const sec    = winners[1]
-              const sPhone = sec.phone || ''
-              const maskedSec = sPhone.length > 4 ? sPhone.slice(0,2) + '*' + sPhone.slice(-4) : sPhone
-              return (
-                <>
-                  <span className="wo-and-others">and</span>
-                  <span className={`wo-name-chip${sec.playerKey === playerKey ? ' mine' : ''}`}>
-                    {sec.name || 'Anonymous'} ({maskedSec})
-                  </span>
-                  <span className="wo-won-txt">won!</span>
-                </>
-              )
-            })()}
-            {otherCount > 1 && <span className="wo-and-others">and {otherCount} others won!</span>}
-            {otherCount === 0 && <span className="wo-won-txt">won!</span>}
-          </div>
-
-          <div className="wo-countdown-row">
-            <div className="wo-countdown">{cdSec}</div>
-            <div className="wo-cd-unit">seconds</div>
-          </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h2 style={{ margin: '0 0 4px 0', fontSize: '18px', fontWeight: 700 }}>
+            👋 {user.name || 'Anonymous'}
+          </h2>
+          <p style={{ margin: '0', fontSize: '12px', opacity: 0.9 }}>
+            {user.phone && `📱 ${user.phone}`}
+          </p>
         </div>
-
-        <div className="wo-scroll">
-          {total > 1 && (
-            <div className="wo-split-info">
-              <strong>{total}</strong> winners &nbsp;·&nbsp; Prize split: <strong>{split} ETB</strong> each
-            </div>
-          )}
-          {winners.map((w, i) => {
-            const isMe  = w.playerKey === playerKey
-            const ph    = w.phone || 'N/A'
-            const masked = ph.length > 6 ? ph.slice(0,3) + '·'.repeat(Math.max(0, ph.length - 6)) + ph.slice(-3) : ph
-            return (
-              <div key={i} className={`wo-card-block${isMe ? ' is-me' : ''}`}>
-                <div className="wo-card-top">
-                  <div>
-                    <div className="wo-card-name">
-                      {w.name || 'Anonymous'}
-                      {isMe && <span className="wo-me-tag">YOU</span>}
-                    </div>
-                    <div className="wo-card-phone">{masked}</div>
-                  </div>
-                  <div className="wo-card-right">
-                    <div className="wo-prize-amt">{split} ETB</div>
-                    <div className="wo-prize-lbl">Prize</div>
-                  </div>
-                </div>
-                <div className="wo-card-meta">
-                  <div className="wo-meta-pill">Card <strong>#{w.cardNum || '?'}</strong></div>
-                  <div className="wo-pattern-badge">{w.pattern || '?'}</div>
-                </div>
-                <WoTable flat={w.cardFull || []} pi={w.patternIndices || []} drawn={drawn} />
-              </div>
-            )
-          })}
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: '24px', fontWeight: 700 }}>{balance}</div>
+          <div style={{ fontSize: '11px', opacity: 0.9 }}>ETB</div>
         </div>
       </div>
     </div>
   )
-}
+})
 
-// ════════════════════════════════════════════════════════
-//  GAME PAGE
-// ════════════════════════════════════════════════════════
-export default function GamePage() {
-  const navigate      = useNavigate()
-  const [searchParams] = useSearchParams()
-  const forceSpec     = searchParams.get('spectator') === 'true'
-
-  // ── Session data from localStorage ──────────────────────
-  const user       = (() => { try { return JSON.parse(localStorage.getItem('bingoUser') || '{}') } catch { return {} } })()
-  const rawCards   = (() => { try { return JSON.parse(localStorage.getItem('selectedCartelas') || 'null') } catch { return null } })()
-  const rawNums    = (() => { try { return JSON.parse(localStorage.getItem('cartelaNumbers')   || 'null') } catch { return null } })()
-  const stakeAmt   = localStorage.getItem('entryFee')      || '10'
-  const prizeSaved = parseInt(localStorage.getItem('prizePool')     || '0')
-  const gameId     = localStorage.getItem('currentGameId') || 'UNKNOWN'
-  const gameNum    = localStorage.getItem('currentGameNum') || '--'
-  const numPlayers = parseInt(localStorage.getItem('numPlayers')    || '0')
-
-  const cards    = rawCards ? (Array.isArray(rawCards) ? rawCards : [rawCards]) : null
-  const cardNums = rawNums  ? (Array.isArray(rawNums)  ? rawNums  : [rawNums])  : []
-
-  const isSpectator = !cards || cards.length === 0
-  const userKey     = (user.telegram_id || user.phone || '').toString()
-  const playerKey   = sanitizeKey(userKey)
-  const RECONNECT_KEY = `ydm_gamestate_${gameId}`
-
-  // ── UI State ─────────────────────────────────────────────
-  const [isLoading, setIsLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
-  const [drawn, setDrawn]             = useState([])
-  const [isMuted, setIsMuted]         = useState(true)
-  const [autoMode, setAutoMode]       = useState(false)
-  const [currentPrize, setCurrentPrize] = useState(prizeSaved)
-  const [playerCount, setPlayerCount] = useState(numPlayers)
-  const [calledCount, setCalledCount] = useState('0/75')
-  const [histBalls, setHistBalls]     = useState([])   // last 5 drawn, most recent first
-
-  // ── Card marking state ───────────────────────────────────
-  // markedSets[ci] = Set of marked cell indices for card ci
-  const [markedSets, setMarkedSets]   = useState(() =>
-    cards ? cards.map(() => new Set([12])) : []
+// ── Cartela Card Item ──────────────────────────────────────
+const CartelaCard = React.memo(({ cardNumber, isSelected, onSelect, disabled }) => {
+  return (
+    <button
+      onClick={() => !disabled && onSelect(cardNumber)}
+      disabled={disabled}
+      style={{
+        padding: '12px',
+        background: isSelected ? '#4ade80' : '#f5f5f5',
+        border: `2px solid ${isSelected ? '#22c55e' : '#ddd'}`,
+        borderRadius: '8px',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        fontWeight: 700,
+        fontSize: '14px',
+        color: isSelected ? '#fff' : '#333',
+        transition: 'all 0.2s',
+        opacity: disabled ? 0.5 : 1,
+        transform: isSelected ? 'scale(1.05)' : 'scale(1)',
+        boxShadow: isSelected ? '0 4px 12px rgba(74, 222, 128, 0.3)' : 'none'
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled && !isSelected) {
+          e.target.style.background = '#e8f5e9'
+          e.target.style.borderColor = '#81c784'
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!disabled && !isSelected) {
+          e.target.style.background = '#f5f5f5'
+          e.target.style.borderColor = '#ddd'
+        }
+      }}
+    >
+      Card #{cardNumber}
+    </button>
   )
-  // winBlinks[ci] = array of indices to blink, or null
-  const [winBlinks, setWinBlinks]     = useState(() => cards ? cards.map(() => null) : [])
-  const [claimReady, setClaimReady]   = useState(() => cards ? cards.map(() => false) : [])
+})
 
-  // ── Game flow state ───────────────────────────────────────
-  const [gameActive, setGameActive]   = useState(false)
-  const [gameEnded, setGameEnded]     = useState(false)
-  const [gameStarted, setGameStarted] = useState(false)
+// ── Current Game Status ────────────────────────────────────
+const GameStatusBanner = React.memo(({ gameInfo, playerCount, prizePool }) => {
+  if (!gameInfo) return null
 
-  // ── Winner overlay state ──────────────────────────────────
-  const [overlayShown, setOverlayShown] = useState(false)
-  const [winnersList, setWinnersList]   = useState([])
-  const [overlayPrize, setOverlayPrize] = useState(0)
-  const [cdSec, setCdSec]               = useState(REDIRECT_SEC)
+  const isLive = gameInfo.started && !gameInfo.ended
 
-  // ── Host management ───────────────────────────────────────
-  const isHostRef       = useRef(false)
-  const numIntervalRef  = useRef(null)
-  const cleanupDoneRef  = useRef(false)
-  const iAmTheEnderRef  = useRef(false)
-  const overlayShownRef = useRef(false)
-  const gameEndedRef    = useRef(false)
-  const gameActiveRef   = useRef(false)
-  const gameStartedRef  = useRef(false)
-  const drawnRef        = useRef([])
-  const markedSetsRef   = useRef(markedSets)
-  const autoModeRef     = useRef(false)
-  const autoTriggered   = useRef({})
-  const cdTimerRef      = useRef(null)
-  const hostCheckTimerRef = useRef(null)
+  return (
+    <div style={{
+      padding: '12px',
+      background: isLive ? '#1a1a2e' : '#f5f5f5',
+      color: isLive ? '#fff' : '#333',
+      borderRadius: '8px',
+      marginBottom: '20px',
+      border: `1px solid ${isLive ? '#667eea' : '#ddd'}`
+    }}>
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: '12px'
+      }}>
+        <div>
+          <div style={{
+            fontSize: '12px',
+            fontWeight: 600,
+            opacity: 0.8,
+            marginBottom: '4px'
+          }}>
+            {isLive ? '🔴 LIVE GAME' : '⏳ Waiting for game...'}
+          </div>
+          <div style={{ fontSize: '13px', fontWeight: 600 }}>
+            {playerCount} players • {prizePool || '0'} ETB Derash
+          </div>
+        </div>
+        <div style={{
+          background: isLive ? '#667eea' : '#ddd',
+          padding: '6px 12px',
+          borderRadius: '6px',
+          fontSize: '12px',
+          fontWeight: 700
+        }}>
+          {isLive ? 'PLAYING' : 'READY'}
+        </div>
+      </div>
+    </div>
+  )
+})
 
-  // Keep refs in sync
-  useEffect(() => { drawnRef.current = drawn }, [drawn])
-  useEffect(() => { markedSetsRef.current = markedSets }, [markedSets])
-  useEffect(() => { autoModeRef.current = autoMode }, [autoMode])
-  useEffect(() => { gameEndedRef.current = gameEnded }, [gameEnded])
-  useEffect(() => { gameActiveRef.current = gameActive }, [gameActive])
-  useEffect(() => { gameStartedRef.current = gameStarted }, [gameStarted])
+// ════════════════════════════════════════════════════════════
+// MAIN CARTELA PAGE
+// ════════════════════════════════════════════════════════════
+export default function CartelaPage() {
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const gameEndReason = searchParams.get('reason')
 
-  // ── Audio context unlock ─────────────────────────────────
+  // ── Session Data ────────────────────────────────────────────
+  const user = (() => {
+    try {
+      return JSON.parse(localStorage.getItem('bingoUser') || '{}')
+    } catch {
+      return {}
+    }
+  })()
+
+  const userKey = (user.telegram_id || user.phone || '').toString()
+  const playerKey = sanitizeKey(userKey)
+
+  // ── UI State ────────────────────────────────────────────────
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [gameStartAt, setGameStartAt] = useState(null)
+  const [playerCount, setPlayerCount] = useState(0)
+  const [prizePool, setPrizePool] = useState(0)
+  const [gameInfo, setGameInfo] = useState(null)
+  const [balance, setBalance] = useState(0)
+  const [message, setMessage] = useState('')
+  const [dismissEndMessage, setDismissEndMessage] = useState(false)
+
+  // ── Card Selection State ────────────────────────────────────
+  const [selectedCards, setSelectedCards] = useState([])
+  const [entryFee, setEntryFee] = useState('10')
+  const [totalCost, setTotalCost] = useState(0)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // ── Game State Refs ────────────────────────────────────────
+  const unsubscribersRef = useRef([])
+  const countdownIntervalRef = useRef(null)
+
+  // Calculate total cost
   useEffect(() => {
-    const unlock = () => { try { new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
-    document.addEventListener('touchstart', unlock, { once: true })
-    document.addEventListener('click', unlock, { once: true })
-    return () => {
-      document.removeEventListener('touchstart', unlock)
-      document.removeEventListener('click', unlock)
+    const cost = selectedCards.length * parseInt(entryFee || '0')
+    setTotalCost(cost)
+  }, [selectedCards.length, entryFee])
+
+  // Clear params on mount
+  useEffect(() => {
+    if (gameEndReason && !dismissEndMessage) {
+      const timer = setTimeout(() => {
+        setDismissEndMessage(true)
+        window.history.replaceState({}, document.title, window.location.pathname)
+      }, 5000)
+      return () => clearTimeout(timer)
     }
-  }, [])
+  }, [gameEndReason, dismissEndMessage])
 
-  // ── Persist / restore state ───────────────────────────────
-  function persistState(newDrawn, newMarked) {
-    if (gameEndedRef.current || isSpectator || forceSpec || !cards || !gameId || gameId === 'UNKNOWN') return
-    try {
-      localStorage.setItem(RECONNECT_KEY, JSON.stringify({
-        drawn: newDrawn || drawnRef.current,
-        markedSets: (newMarked || markedSetsRef.current).map(s => [...s]),
-        autoTriggered: autoTriggered.current,
-        gameStarted: gameStartedRef.current,
-        ts: Date.now()
-      }))
-    } catch (e) {}
-  }
-
-  function restoreStateFromStorage() {
-    if (isSpectator || forceSpec || !cards) return false
-    try {
-      const raw = localStorage.getItem(RECONNECT_KEY)
-      if (!raw) return false
-      const saved = JSON.parse(raw)
-      if (Date.now() - saved.ts > 7200000) { localStorage.removeItem(RECONNECT_KEY); return false }
-      if (saved.markedSets && saved.markedSets.length === cards.length) {
-        const restored = saved.markedSets.map(arr => new Set(arr))
-        setMarkedSets(restored)
-        markedSetsRef.current = restored
-      }
-      if (saved.autoTriggered) autoTriggered.current = saved.autoTriggered
-      return true
-    } catch (e) { return false }
-  }
-
-  // ── History bubbles ───────────────────────────────────────
-  function updateHistFrom(newDrawn) {
-    const last5 = [...newDrawn].reverse().slice(0, 5)
-    setHistBalls(last5)
-    setCalledCount(`${newDrawn.length}/75`)
-  }
-
-  // ── Check win for a card ──────────────────────────────────
-  function recomputeClaimReady(newMarked) {
-    if (!cards) return
-    const newReady = newMarked.map(ms => !!PATTERNS.find(p => p.i.every(i => ms.has(i))))
-    setClaimReady(newReady)
-    return newReady
-  }
-
-  // ── Auto-trigger bingo after blink ───────────────────────
-  function triggerAutoBingo(ci, win, newMarked) {
-    if (autoTriggered.current[ci]) return
-    autoTriggered.current[ci] = true
-    setWinBlinks(prev => {
-      const next = [...prev]
-      next[ci] = win.i
-      return next
-    })
-    setTimeout(() => {
-      setWinBlinks(prev => {
-        const next = [...prev]
-        next[ci] = null
-        return next
-      })
-      doClaim(ci, win.n, win.i, newMarked)
-    }, 2000)
-  }
-
-  // ── Manual mark a cell ───────────────────────────────────
-  function handleManualMark(ci, idx, val) {
-    if (!gameActiveRef.current || autoModeRef.current || gameEndedRef.current) return
-    if (!drawnRef.current.includes(val)) return
-    setMarkedSets(prev => {
-      const next = prev.map((ms, i) => {
-        if (i !== ci) return ms
-        const newMs = new Set(ms)
-        if (newMs.has(idx)) newMs.delete(idx)
-        else newMs.add(idx)
-        return newMs
-      })
-      markedSetsRef.current = next
-      recomputeClaimReady(next)
-      persistState(drawnRef.current, next)
-      return next
-    })
-  }
-
-  // ── Manual claim ─────────────────────────────────────────
-  function handleManualClaim(ci) {
-    if (!gameActiveRef.current || autoModeRef.current || autoTriggered.current[ci] || gameEndedRef.current) return
-    const ms  = markedSetsRef.current[ci]
-    const win = PATTERNS.find(p => p.i.every(i => ms.has(i)))
-    if (!win) return
-    autoTriggered.current[ci] = true
-    setWinBlinks(prev => {
-      const next = [...prev]
-      next[ci] = win.i
-      return next
-    })
-    setTimeout(() => {
-      setWinBlinks(prev => { const next = [...prev]; next[ci] = null; return next })
-      doClaim(ci, win.n, win.i, markedSetsRef.current)
-    }, 2000)
-  }
-
-  // ── Submit bingo claim to Firebase ───────────────────────
-  async function doClaim(ci, patName, patIdx, currentMarked) {
-    if (!gameActiveRef.current || gameEndedRef.current) return
-    const card = cards[ci]
-    const cols = ['b','i','n','g','o']
-    const flat = []
-    for (let r = 0; r < 5; r++) {
-      for (let c = 0; c < 5; c++) {
-        if (r === 2 && c === 2) { flat.push('FREE'); continue }
-        const colArr = card[cols[c]]
-        flat.push(String(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r]))
-      }
-    }
-    const winRef = push(ref(db, 'activeGame/winners'))
-    await set(winRef, {
-      name: user.name || 'Anonymous',
-      phone: user.phone || 'N/A',
-      playerKey,
-      cardNum: cardNums[ci] || (ci + 1),
-      pattern: patName,
-      cardFull: flat,
-      patternIndices: patIdx,
-      gameId,
-      timestamp: serverTimestamp()
-    })
-    const tx = await runTransaction(ref(db, 'activeGame/ended'), cur => cur === true ? undefined : true)
-    if (tx.committed) iAmTheEnderRef.current = true
-  }
-
-  // ── Toggle auto mode ─────────────────────────────────────
-  function handleToggleAuto() {
-    const newAuto = !autoModeRef.current
-    setAutoMode(newAuto)
-    autoModeRef.current = newAuto
-    if (isSpectator || forceSpec || !cards) return
-    setMarkedSets(prev => {
-      const next = prev.map((ms, ci) => {
-        const card = cards[ci]
-        const cols = ['b','i','n','g','o']
-        const newMs = new Set(ms)
-        if (newAuto) {
-          for (let r = 0; r < 5; r++) {
-            for (let c = 0; c < 5; c++) {
-              const idx = r * 5 + c
-              if (idx === 12) continue
-              const colArr = card[cols[c]]
-              const val = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
-              if (drawnRef.current.includes(val)) newMs.add(idx)
-            }
-          }
-        }
-        return newMs
-      })
-      markedSetsRef.current = next
-      recomputeClaimReady(next)
-      if (newAuto && gameActiveRef.current && !gameEndedRef.current) {
-        next.forEach((ms, ci) => {
-          if (!autoTriggered.current[ci]) {
-            const win = PATTERNS.find(p => p.i.every(i => ms.has(i)))
-            if (win) triggerAutoBingo(ci, win, next)
-          }
-        })
-      }
-      return next
-    })
-  }
-
-  // ── Safe redirect ─────────────────────────────────────────
-  function safeRedirect() {
-    if (cleanupDoneRef.current) return
-    cleanupDoneRef.current = true
-    ;['selectedCartela','selectedCartelas','cartelaNumber','cartelaNumbers',
-      'currentGameId','currentGameNum','prizePool','numPlayers','playerList'
-    ].forEach(k => localStorage.removeItem(k))
-    try { localStorage.removeItem(RECONNECT_KEY) } catch (e) {}
-    navigate('/cartela?fresh=true')
-  }
-
-  async function cleanup() {
-    if (cleanupDoneRef.current) return
-    if (iAmTheEnderRef.current) {
-      try {
-        await update(ref(db), {
-          'activeGame': null,
-          'game/status': null,
-          'game/meta': null,
-          'lobby': null
-        })
-      } catch (e) {}
-    }
-    safeRedirect()
-  }
-
-  // ── Start overlay countdown ───────────────────────────────
-  function startOverlayCountdown() {
-    let remaining = REDIRECT_SEC
-    setCdSec(remaining)
-    if (cdTimerRef.current) clearInterval(cdTimerRef.current)
-    cdTimerRef.current = setInterval(() => {
-      remaining--
-      setCdSec(remaining)
-      if (remaining <= 0) {
-        clearInterval(cdTimerRef.current)
-        cdTimerRef.current = null
-        if (iAmTheEnderRef.current) cleanup()
-        else safeRedirect()
-      }
-    }, 1000)
-  }
-
-  // Ref to always have latest prize in handleWinners closure
-  const overlayPrizeRef = useRef(prizeSaved)
-  useEffect(() => { overlayPrizeRef.current = currentPrize }, [currentPrize])
-
-  // ── Handle winners ────────────────────────────────────────
-  async function handleWinners(winnersMap) {
-    if (overlayShownRef.current) return
-    overlayShownRef.current = true
-    setOverlayShown(true)
-    gameEndedRef.current = true
-    gameActiveRef.current = false
-    setGameEnded(true)
-    setGameActive(false)
-    if (numIntervalRef.current) { clearInterval(numIntervalRef.current); numIntervalRef.current = null }
-
-    const wList = Object.values(winnersMap || {})
-    if (!wList.length) { safeRedirect(); return }
-
-    const total    = wList.length
-    const myWins   = wList.filter(w => w.playerKey === playerKey)
-    const iWon     = myWins.length > 0
-    const split    = Math.floor(overlayPrizeRef.current / total)
-    const myShare  = split * myWins.length
-
-    playWinnerSound(false)
-
-    if (iWon) {
-      try {
-        await runTransaction(ref(db, `users/${playerKey}/balance`), b => (b || 0) + myShare)
-      } catch (e) {}
-    }
-
-    setWinnersList(wList)
-    setOverlayPrize(overlayPrizeRef.current)
-    startOverlayCountdown()
-  }
-
-  // ── Host: generate next number ────────────────────────────
-  async function genNextNumber() {
-    if (!gameActiveRef.current || gameEndedRef.current || !isHostRef.current) return
-    if (drawnRef.current.length >= 75) { endGame(); return }
-    const snap = await get(ref(db, 'activeGame/drawnNumbers'))
-    const fbDrawn = new Set()
-    if (snap.exists()) snap.forEach(c => { const d = c.val(); if (d?.number) fbDrawn.add(d.number) })
-    const avail = []
-    for (let i = 1; i <= 75; i++) if (!fbDrawn.has(i)) avail.push(i)
-    if (!avail.length) { endGame(); return }
-    const n = avail[Math.floor(Math.random() * avail.length)]
-    await set(ref(db, `activeGame/drawnNumbers/${n}`), {
-      number: n,
-      drawnAt: serverTimestamp(),
-      letter: letter(n)
-    })
-  }
-
-  // ── Centralized "start the draw loop if eligible" ────────
-  function maybeStartGen() {
-    if (isHostRef.current && gameActiveRef.current && !gameEndedRef.current && !numIntervalRef.current) {
-      console.log('✅ Starting draw loop (host + game active)')
-      startGen()
-    }
-  }
-
-  function startGen() {
-    if (numIntervalRef.current) clearInterval(numIntervalRef.current)
-    console.log('🎲 First number draw...')
-    genNextNumber()
-    numIntervalRef.current = setInterval(async () => {
-      if (!gameActiveRef.current || gameEndedRef.current) {
-        clearInterval(numIntervalRef.current); numIntervalRef.current = null; return
-      }
-      const hostSnap = await get(ref(db, 'activeGame/host'))
-      if (hostSnap.val() !== playerKey) {
-        clearInterval(numIntervalRef.current); isHostRef.current = false; numIntervalRef.current = null; return
-      }
-      await genNextNumber()
-    }, DRAW_INTERVAL)
-  }
-
-  // ── Host election ─────────────────────────────────────────
-  async function claimHost() {
-    if (gameEndedRef.current) return
-    const myId = playerKey || ('host_' + Date.now())
-    console.log('🔒 Attempting to claim host:', myId)
-    const tx = await runTransaction(ref(db, 'activeGame/hostLock'), cur => cur === null ? myId : undefined)
-    if (tx.committed && tx.snapshot.val() === myId) {
-      console.log('✅ HOST CLAIMED!')
-      isHostRef.current = true
-      await set(ref(db, 'activeGame/host'), myId)
-      onDisconnect(ref(db, 'activeGame/hostLock')).remove()
-      onDisconnect(ref(db, 'activeGame/host')).remove()
-      maybeStartGen()
-      return
-    }
-    const hostSnap = await get(ref(db, 'activeGame/host'))
-    if (hostSnap.val() === myId) {
-      console.log('✅ Already host (verified)')
-      isHostRef.current = true
-      maybeStartGen()
-    } else {
-      console.log('❌ Someone else is host:', hostSnap.val())
-    }
-  }
-
-  async function endGame() {
-    if (gameEndedRef.current) return
-    console.log('🛑 Game ended')
-    gameEndedRef.current = true
-    gameActiveRef.current = false
-    iAmTheEnderRef.current = true
-    setGameEnded(true); setGameActive(false)
-    if (numIntervalRef.current) { clearInterval(numIntervalRef.current); numIntervalRef.current = null }
-    await set(ref(db, 'activeGame/ended'), true)
-    setTimeout(() => { if (!overlayShownRef.current) safeRedirect() }, 8000)
-  }
-
-  // ── Reapply drawn to cards (reconnect) ───────────────────
-  function reapplyToCards(currentDrawn, currentMarked, currentAuto) {
-    if (!cards) return currentMarked
-    const newMarked = currentMarked.map((ms, ci) => {
-      const card = cards[ci]
-      const cols = ['b','i','n','g','o']
-      const newMs = new Set(ms)
-      if (currentAuto) {
-        for (let r = 0; r < 5; r++) {
-          for (let c = 0; c < 5; c++) {
-            const idx = r * 5 + c
-            if (idx === 12) continue
-            const colArr = card[cols[c]]
-            const val    = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
-            if (currentDrawn.includes(val)) newMs.add(idx)
-          }
-        }
-      }
-      return newMs
-    })
-    setMarkedSets(newMarked)
-    markedSetsRef.current = newMarked
-    recomputeClaimReady(newMarked)
-    return newMarked
-  }
-
-  // ── Connection monitor ────────────────────────────────────
-  function setupConnectionMonitor() {
-    const connRef = ref(db, '.info/connected')
-    let wasOffline = false
-    onValue(connRef, async snap => {
-      const online = snap.val() === true
-      if (!online) { wasOffline = true; persistState() }
-      else if (wasOffline && online) {
-        wasOffline = false
-        const endedSnap = await get(ref(db, 'activeGame/ended'))
-        if (endedSnap.val() === true) {
-          gameEndedRef.current = true; gameActiveRef.current = false
-          setGameEnded(true); setGameActive(false)
-          const wSnap = await get(ref(db, 'activeGame/winners'))
-          if (wSnap.exists() && !overlayShownRef.current) { handleWinners(wSnap.val()); return }
-          if (!overlayShownRef.current) safeRedirect()
-          return
-        }
-        resyncAfterReconnect()
-      }
-    })
-  }
-
-  async function resyncAfterReconnect() {
-    const endedSnap = await get(ref(db, 'activeGame/ended'))
-    if (endedSnap.val() === true) {
-      const wSnap = await get(ref(db, 'activeGame/winners'))
-      if (wSnap.exists() && !overlayShownRef.current) { handleWinners(wSnap.val()); return }
-      if (!overlayShownRef.current) safeRedirect()
-      return
-    }
-    const numSnap = await get(ref(db, 'activeGame/drawnNumbers'))
-    if (numSnap.exists()) {
-      const nums = []
-      numSnap.forEach(c => { const d = c.val(); if (d?.number) nums.push(d) })
-      nums.sort((a, b) => (a.drawnAt || 0) - (b.drawnAt || 0))
-      const newDrawn = nums.map(d => d.number)
-      setDrawn(newDrawn)
-      drawnRef.current = newDrawn
-      updateHistFrom(newDrawn)
-      const newMarked = reapplyToCards(newDrawn, markedSetsRef.current, autoModeRef.current)
-      persistState(newDrawn, newMarked)
-    }
-    if (gameActiveRef.current && !gameEndedRef.current && !isHostRef.current) await claimHost()
-    else maybeStartGen()
-  }
-
-  // ─────────────────────────────────────────────────────────
-  // MAIN INIT
-  // ─────────────────────────────────────────────────────────
+  // Initialize listeners
   useEffect(() => {
     let unmounted = false
 
     async function init() {
       try {
-        console.log('🎮 GamePage initializing...')
-
-        // Check if game already ended
-        const endedSnap = await get(ref(db, 'activeGame/ended'))
-        if (endedSnap.val() === true) {
-          console.log('⚠️ Game already ended')
-          gameEndedRef.current = true
-          const wSnap = await get(ref(db, 'activeGame/winners'))
-          if (wSnap.exists()) { handleWinners(wSnap.val()) } else { safeRedirect() }
-          return
-        }
-
-        // Restore persisted state
-        restoreStateFromStorage()
-
-        // Load existing drawn numbers
-        const numSnap = await get(ref(db, 'activeGame/drawnNumbers'))
-        if (numSnap.exists()) {
-          const nums = []
-          numSnap.forEach(c => { const d = c.val(); if (d?.number) nums.push(d) })
-          nums.sort((a, b) => (a.drawnAt || 0) - (b.drawnAt || 0))
-          const initDrawn = nums.map(d => d.number)
-          drawnRef.current = initDrawn
-          setDrawn(initDrawn)
-          updateHistFrom(initDrawn)
-          if (!isSpectator && !forceSpec && cards) {
-            reapplyToCards(initDrawn, markedSetsRef.current, autoModeRef.current)
+        // Get current user balance
+        if (playerKey) {
+          const userSnap = await get(ref(db, `users/${playerKey}`))
+          if (userSnap.exists()) {
+            setBalance(userSnap.val().balance || 0)
+          } else {
+            setBalance(0)
           }
         }
 
-        // Check game started status — single source of truth
-        const startedSnap = await get(ref(db, 'activeGame/started'))
-        if (startedSnap.val() === true) {
-          console.log('🚀 Game already started')
-          gameStartedRef.current = true
-          gameActiveRef.current  = true
-          setGameStarted(true)
-          setGameActive(true)
-        } else {
-          // Fallback: check if lobby set game/status
-          const statusSnap = await get(ref(db, 'game/status'))
-          if (statusSnap.val() === 'started') {
-            console.log('🚀 Mirroring game/status -> activeGame/started')
-            gameStartedRef.current = true
-            gameActiveRef.current = true
-            setGameStarted(true)
-            setGameActive(true)
-            await runTransaction(ref(db, 'activeGame/started'), cur => cur === true ? undefined : true)
-          }
-        }
-
-        // Check for existing winners
-        const wSnap = await get(ref(db, 'activeGame/winners'))
-        if (wSnap.exists()) { 
-          console.log('🏆 Winners found')
-          handleWinners(wSnap.val())
-          return 
-        }
-
-        if (unmounted) return
-
-        // ── Attach realtime listeners ──────────────────────────
-
-        // child_added for live number drawing
-        const unsubChildAdded = onChildAdded(ref(db, 'activeGame/drawnNumbers'), snap => {
-          if (gameEndedRef.current) return
-          const d = snap.val()
-          if (!d?.number) return
-          if (drawnRef.current.includes(d.number)) return
-          const n = d.number
-          const newDrawn = [...drawnRef.current, n]
-          drawnRef.current = newDrawn
-          setDrawn(newDrawn)
-          updateHistFrom(newDrawn)
-          if (!isMuted) playNum(n, false)
-          if (!isSpectator && !forceSpec && gameActiveRef.current && cards) {
-            setMarkedSets(prev => {
-              const next = prev.map((ms, ci) => {
-                const card = cards[ci]
-                const cols = ['b','i','n','g','o']
-                const newMs = new Set(ms)
-                for (let r = 0; r < 5; r++) {
-                  for (let c = 0; c < 5; c++) {
-                    const idx = r * 5 + c
-                    if (idx === 12) continue
-                    const colArr = card[cols[c]]
-                    const val = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
-                    if (val === n && autoModeRef.current) newMs.add(idx)
-                  }
-                }
-                return newMs
-              })
-              markedSetsRef.current = next
-              const newReady = next.map((ms, ci) => {
-                if (autoTriggered.current[ci]) return true
-                const win = PATTERNS.find(p => p.i.every(i => ms.has(i)))
-                if (win && autoModeRef.current && gameActiveRef.current && !gameEndedRef.current) {
-                  triggerAutoBingo(ci, win, next)
-                }
-                return !!win
-              })
-              setClaimReady(newReady)
-              return next
+        // Listen to game status
+        const unsubGame = onValue(ref(db, 'activeGame'), snap => {
+          if (unmounted) return
+          const data = snap.val()
+          if (data) {
+            setGameInfo({
+              started: data.started || false,
+              ended: data.ended || false
             })
-            persistState(newDrawn, markedSetsRef.current)
-          }
-          if (newDrawn.length >= 75 && gameActiveRef.current && !gameEndedRef.current) endGame()
-        })
-
-        // Winners
-        const unsubWinners = onValue(ref(db, 'activeGame/winners'), snap => {
-          if (snap.exists() && !overlayShownRef.current) handleWinners(snap.val())
-        })
-
-        // Ended
-        const unsubEnded = onValue(ref(db, 'activeGame/ended'), async snap => {
-          if (snap.val() === true && !gameEndedRef.current) {
-            gameEndedRef.current = true; gameActiveRef.current = false
-            setGameEnded(true); setGameActive(false)
-            if (numIntervalRef.current) { clearInterval(numIntervalRef.current); numIntervalRef.current = null }
-            const wc = await get(ref(db, 'activeGame/winners'))
-            if (!wc.exists()) setTimeout(safeRedirect, 1000)
-            else if (!overlayShownRef.current) handleWinners(wc.val())
+          } else {
+            setGameInfo(null)
           }
         })
+        unsubscribersRef.current.push(unsubGame)
 
-        // Started — THE place that triggers game flow
-        const unsubStarted = onValue(ref(db, 'activeGame/started'), snap => {
-          if (snap.val() === true && !gameStartedRef.current) {
-            console.log('🎬 Game started!')
-            gameStartedRef.current = true; gameActiveRef.current = true
-            setGameStarted(true); setGameActive(true)
-          }
-          if (snap.val() === true) maybeStartGen()
-        })
-
-        // Mirror game/status -> activeGame/started
-        const unsubStatus = onValue(ref(db, 'game/status'), async snap => {
-          if (snap.val() === 'started' && !gameStartedRef.current) {
-            console.log('📡 Syncing game/status to activeGame/started')
-            gameStartedRef.current = true; gameActiveRef.current = true
-            setGameStarted(true); setGameActive(true)
-            await runTransaction(ref(db, 'activeGame/started'), cur => cur === true ? undefined : true)
-            maybeStartGen()
-          }
-        })
-
-        // Player count (display only)
+        // Listen to player count
         const unsubPlayers = onValue(ref(db, 'lobby/players'), snap => {
-          setPlayerCount(snap.numChildren())
+          if (unmounted) return
+          const count = snap.numChildren()
+          setPlayerCount(count)
         })
+        unsubscribersRef.current.push(unsubPlayers)
 
-        // Prize sync
-        const unsubTaken = onValue(ref(db, 'lobby/takenCards'), snap => {
+        // Listen to prize pool
+        const unsubPrize = onValue(ref(db, 'lobby/takenCards'), snap => {
+          if (unmounted) return
           const count = Object.keys(snap.val() || {}).length
-          const p = Math.floor(count * parseInt(stakeAmt) * 0.8)
-          setCurrentPrize(p)
-          overlayPrizeRef.current = p
+          const prize = Math.floor(count * parseInt(entryFee || '0') * 0.8)
+          setPrizePool(prize)
         })
+        unsubscribersRef.current.push(unsubPrize)
 
-        // Host lock failover
-        const unsubHostLock = onValue(ref(db, 'activeGame/hostLock'), async snap => {
-          if (!snap.exists() && !isHostRef.current && gameActiveRef.current && !gameEndedRef.current) {
-            console.log('🔄 Host lock released, attempting to claim')
-            await claimHost()
+        // Listen to game countdown
+        const unsubCountdown = onValue(ref(db, 'lobby/gameStartAt'), snap => {
+          if (unmounted) return
+          const timestamp = snap.val()
+          if (timestamp) {
+            setGameStartAt(timestamp)
           }
         })
-
-        setupConnectionMonitor()
-        await claimHost()
-
-        // SAFETY: If draw loop hasn't started after 3 seconds, force a check
-        hostCheckTimerRef.current = setTimeout(() => {
-          if (!numIntervalRef.current && gameActiveRef.current && !gameEndedRef.current) {
-            console.warn('⚠️ Draw loop not running after 3s, forcing host check')
-            claimHost()
-          }
-        }, 3000)
+        unsubscribersRef.current.push(unsubCountdown)
 
         setIsLoading(false)
-
-        // Cleanup on unmount
-        return () => {
-          unmounted = true
-          unsubChildAdded()
-          unsubWinners()
-          unsubEnded()
-          unsubStarted()
-          unsubStatus()
-          unsubPlayers()
-          unsubTaken()
-          unsubHostLock()
-          if (numIntervalRef.current) clearInterval(numIntervalRef.current)
-          if (cdTimerRef.current) clearInterval(cdTimerRef.current)
-          if (hostCheckTimerRef.current) clearTimeout(hostCheckTimerRef.current)
+      } catch (err) {
+        console.error('❌ Init error:', err)
+        if (!unmounted) {
+          setError(err.message || 'Failed to load game data')
+          setIsLoading(false)
         }
-      } catch (error) {
-        console.error('❌ Init error:', error)
-        setLoadError(error.message || 'Failed to load game')
-        setIsLoading(false)
       }
     }
 
-    const cleanupPromise = init()
-    return () => { unmounted = true; cleanupPromise.then(fn => fn && fn()) }
+    init()
+
+    return () => {
+      unmounted = true
+      unsubscribersRef.current.forEach(unsub => unsub && unsub())
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current)
+      }
+    }
+  }, [playerKey, entryFee])
+
+  // Handle countdown timer
+  useEffect(() => {
+    if (!gameStartAt) return
+
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current)
+    }
+
+    const updateCountdown = () => {
+      const now = Date.now()
+      const remaining = Math.max(0, gameStartAt - now)
+
+      if (remaining <= 0) {
+        setMessage('Game starting...')
+        clearInterval(countdownIntervalRef.current)
+        return
+      }
+
+      const seconds = Math.ceil(remaining / 1000)
+      setMessage(`⏱️ Game starts in ${seconds}s`)
+    }
+
+    updateCountdown()
+    countdownIntervalRef.current = setInterval(updateCountdown, 1000)
+
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current)
+      }
+    }
+  }, [gameStartAt])
+
+  // Handle card selection
+  const handleSelectCard = useCallback((cardNum) => {
+    setSelectedCards(prev => {
+      if (prev.includes(cardNum)) {
+        return prev.filter(c => c !== cardNum)
+      } else {
+        // Max 10 cards per player
+        if (prev.length >= 10) {
+          setMessage('❌ Maximum 10 cards per game')
+          return prev
+        }
+        return [...prev, cardNum]
+      }
+    })
   }, [])
 
-  // ── Handle load error retry ───────────────────────────────
-  const handleRetry = () => {
-    setIsLoading(true)
-    setLoadError(null)
-    window.location.reload()
+  // Submit cards
+  const handleSubmitCards = useCallback(async () => {
+    if (!playerKey) {
+      setMessage('❌ Please authenticate first')
+      return
+    }
+
+    if (selectedCards.length === 0) {
+      setMessage('❌ Please select at least 1 card')
+      return
+    }
+
+    if (totalCost > balance) {
+      setMessage(`❌ Insufficient balance (need ${totalCost} ETB, have ${balance} ETB)`)
+      return
+    }
+
+    setIsSubmitting(true)
+    setMessage('Processing...')
+
+    try {
+      // Get current game ID
+      const gameSnap = await get(ref(db, 'lobby/gameStartAt'))
+      const gameId = `game_${Date.now()}`
+
+      // Deduct from balance
+      await update(ref(db, `users/${playerKey}`), {
+        balance: balance - totalCost
+      })
+
+      // Record taken cards
+      const cardsKey = push(ref(db, 'lobby/takenCards')).key
+      await set(ref(db, `lobby/takenCards/${playerKey}`), {
+        cards: selectedCards,
+        amount: totalCost,
+        timestamp: serverTimestamp()
+      })
+
+      // Store selected cards in localStorage
+      localStorage.setItem('selectedCartelas', JSON.stringify(selectedCards))
+      localStorage.setItem('cartelaNumbers', JSON.stringify(selectedCards))
+      localStorage.setItem('entryFee', entryFee)
+      localStorage.setItem('prizePool', prizePool.toString())
+      localStorage.setItem('currentGameId', gameId)
+      localStorage.setItem('currentGameNum', `#${Date.now().toString().slice(-4)}`)
+      localStorage.setItem('numPlayers', playerCount.toString())
+
+      setMessage('✅ Cards selected! Entering game...')
+
+      // Navigate after short delay
+      setTimeout(() => {
+        navigate('/game')
+      }, 1000)
+    } catch (err) {
+      console.error('❌ Submit error:', err)
+      setMessage(`❌ ${err.message || 'Failed to submit cards'}`)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [playerKey, selectedCards, totalCost, balance, entryFee, prizePool, playerCount, navigate])
+
+  // Handle spectator mode
+  const handleSpectate = useCallback(() => {
+    localStorage.setItem('selectedCartelas', JSON.stringify([]))
+    localStorage.setItem('cartelaNumbers', JSON.stringify([]))
+    localStorage.setItem('entryFee', '0')
+    localStorage.setItem('currentGameId', `game_${Date.now()}`)
+    localStorage.setItem('numPlayers', playerCount.toString())
+    navigate('/game?spectator=true')
+  }, [playerCount, navigate])
+
+  // ── Error Screen ────────────────────────────────────────────
+  if (error) {
+    return (
+      <div style={{
+        padding: '20px',
+        textAlign: 'center',
+        background: '#fff5f5',
+        borderRadius: '12px',
+        border: '1px solid #feb2b2'
+      }}>
+        <h2 style={{ color: '#c53030', marginTop: 0 }}>⚠️ Error</h2>
+        <p style={{ color: '#742a2a' }}>{error}</p>
+        <button
+          onClick={() => window.location.reload()}
+          style={{
+            padding: '10px 20px',
+            background: '#c53030',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '6px',
+            fontWeight: 700,
+            cursor: 'pointer'
+          }}
+        >
+          🔄 Retry
+        </button>
+      </div>
+    )
   }
 
-  // ── Show loading screen ───────────────────────────────────
-  if (isLoading) return <LoadingScreen />
-
-  // ── Show error screen ────────────────────────────────────
-  if (loadError) return <ErrorScreen message={loadError} onRetry={handleRetry} />
-
-  // ── Board cells ───────────────────────────────────────────
-  const boardCellsRendered = []
-  for (let i = 1; i <= 75; i++) {
-    const isDrawn = drawn.includes(i)
-    const cls = isDrawn ? `bnum ${colClass(i)}` : 'bnum'
-    boardCellsRendered.push(<div key={i} className={cls}>{i}</div>)
+  // ── Loading Screen ────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <div style={{ padding: '20px' }}>
+        <SkeletonLoader />
+        <SkeletonLoader />
+        <SkeletonLoader />
+      </div>
+    )
   }
 
-  // ── Render ────────────────────────────────────────────────
+  // ── Available cards (1-30) ──────────────────────────────────
+  const availableCards = Array.from({ length: 30 }, (_, i) => i + 1)
+
+  // ── Main Render ─────────────────────────────────────────────
   return (
-    <>
-      {/* Stats bar */}
-      <div className="game-stats">
-        <div className="stat gold">
-          <div className="lbl">Derash</div>
-          <div className="val">{currentPrize}</div>
-          <div className="sub">ETB</div>
+    <div style={{ padding: '16px', paddingBottom: '100px', maxWidth: '500px', margin: '0 auto' }}>
+      {/* Header */}
+      <div style={{
+        textAlign: 'center',
+        marginBottom: '24px',
+        paddingTop: '12px'
+      }}>
+        <h1 style={{
+          margin: '0 0 8px 0',
+          fontSize: '28px',
+          fontWeight: 700,
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          backgroundClip: 'text',
+          color: 'transparent'
+        }}>
+          🎰 YDM BINGO
+        </h1>
+        <p style={{
+          margin: '0',
+          fontSize: '12px',
+          color: '#666',
+          fontWeight: 600
+        }}>
+          ቢንጎ ጨዋታ • Cartela Selection
+        </p>
+      </div>
+
+      {/* Game End Message */}
+      {gameEndReason && !dismissEndMessage && (
+        <GameEndMessage
+          reason={gameEndReason}
+          onDismiss={() => setDismissEndMessage(true)}
+        />
+      )}
+
+      {/* Player Info */}
+      <PlayerCard user={user} balance={`${balance}`} />
+
+      {/* Game Status */}
+      <GameStatusBanner
+        gameInfo={gameInfo}
+        playerCount={playerCount}
+        prizePool={prizePool}
+      />
+
+      {/* Stake Amount Selection */}
+      <div style={{
+        marginBottom: '20px',
+        padding: '12px',
+        background: '#f5f5f5',
+        borderRadius: '8px'
+      }}>
+        <label style={{
+          display: 'block',
+          fontSize: '12px',
+          fontWeight: 700,
+          marginBottom: '8px',
+          color: '#333'
+        }}>
+          💰 Entry Fee per Card (ETB)
+        </label>
+        <select
+          value={entryFee}
+          onChange={(e) => setEntryFee(e.target.value)}
+          disabled={gameInfo?.started}
+          style={{
+            width: '100%',
+            padding: '10px',
+            border: '1px solid #ddd',
+            borderRadius: '6px',
+            fontSize: '14px',
+            fontWeight: 600,
+            cursor: gameInfo?.started ? 'not-allowed' : 'pointer',
+            opacity: gameInfo?.started ? 0.5 : 1
+          }}
+        >
+          <option value="10">10 ETB</option>
+          <option value="20">20 ETB</option>
+          <option value="50">50 ETB</option>
+          <option value="100">100 ETB</option>
+        </select>
+      </div>
+
+      {/* Card Selection */}
+      <div style={{ marginBottom: '20px' }}>
+        <label style={{
+          display: 'block',
+          fontSize: '12px',
+          fontWeight: 700,
+          marginBottom: '12px',
+          color: '#333'
+        }}>
+          🎫 Select Cartelas ({selectedCards.length}/10)
+        </label>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: '8px'
+        }}>
+          {availableCards.map(cardNum => (
+            <CartelaCard
+              key={cardNum}
+              cardNumber={cardNum}
+              isSelected={selectedCards.includes(cardNum)}
+              onSelect={handleSelectCard}
+              disabled={gameInfo?.started}
+            />
+          ))}
         </div>
-        <div className="stat">
-          <div className="lbl">Players</div>
-          <div className="val">{playerCount}</div>
+      </div>
+
+      {/* Cost Summary */}
+      {selectedCards.length > 0 && (
+        <div style={{
+          padding: '12px',
+          background: 'linear-gradient(135deg, #ffd700 0%, #ffed4e 100%)',
+          borderRadius: '8px',
+          marginBottom: '20px',
+          textAlign: 'center'
+        }}>
+          <div style={{
+            fontSize: '12px',
+            fontWeight: 600,
+            color: '#333',
+            marginBottom: '4px'
+          }}>
+            💵 Total Cost
+          </div>
+          <div style={{
+            fontSize: '28px',
+            fontWeight: 700,
+            color: '#333'
+          }}>
+            {totalCost} ETB
+          </div>
+          <div style={{
+            fontSize: '11px',
+            color: '#555',
+            marginTop: '4px'
+          }}>
+            {selectedCards.length} card{selectedCards.length !== 1 ? 's' : ''} × {entryFee} ETB
+          </div>
         </div>
-        <div className="stat">
-          <div className="lbl">Stake</div>
-          <div className="val">{stakeAmt} ETB</div>
+      )}
+
+      {/* Message */}
+      {message && (
+        <div style={{
+          padding: '12px',
+          background: message.includes('✅') ? '#dcfce7' : message.includes('❌') ? '#fee2e2' : '#dbeafe',
+          color: message.includes('✅') ? '#166534' : message.includes('❌') ? '#991b1b' : '#0c4a6e',
+          borderRadius: '8px',
+          marginBottom: '16px',
+          fontSize: '13px',
+          fontWeight: 600,
+          textAlign: 'center'
+        }}>
+          {message}
         </div>
-        <div className="stat green">
-          <div className="lbl">Called</div>
-          <div className="val">{calledCount}</div>
-        </div>
-        <button className="mute-btn" onClick={() => setIsMuted(m => !m)}>
-          {isMuted ? '🔇' : '🔊'}
+      )}
+
+      {/* Action Buttons */}
+      <div style={{
+        position: 'fixed',
+        bottom: '16px',
+        left: '16px',
+        right: '16px',
+        display: 'flex',
+        gap: '12px',
+        maxWidth: 'calc(500px - 32px)',
+        margin: '0 auto'
+      }}>
+        {/* Play Button */}
+        <button
+          onClick={handleSubmitCards}
+          disabled={
+            isSubmitting ||
+            selectedCards.length === 0 ||
+            totalCost > balance ||
+            gameInfo?.started
+          }
+          style={{
+            flex: 1,
+            padding: '14px',
+            background: selectedCards.length > 0 && totalCost <= balance && !gameInfo?.started
+              ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+              : '#ddd',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: 700,
+            fontSize: '14px',
+            cursor: selectedCards.length > 0 && totalCost <= balance && !gameInfo?.started
+              ? 'pointer'
+              : 'not-allowed',
+            opacity: selectedCards.length > 0 ? 1 : 0.7,
+            transition: 'all 0.2s'
+          }}
+        >
+          {isSubmitting ? '⏳ Processing...' : '▶️ PLAY'}
+        </button>
+
+        {/* Spectate Button */}
+        <button
+          onClick={handleSpectate}
+          disabled={!gameInfo?.started}
+          style={{
+            flex: '0 0 80px',
+            padding: '14px',
+            background: gameInfo?.started ? '#4ecdc4' : '#ddd',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '8px',
+            fontWeight: 700,
+            fontSize: '12px',
+            cursor: gameInfo?.started ? 'pointer' : 'not-allowed',
+            transition: 'all 0.2s'
+          }}
+        >
+          👁️ Watch
         </button>
       </div>
 
-      <div className="game-main">
-        {/* Left: 75-ball board */}
-        <div className="game-left">
-          <div className="board-hdr">
-            <div className="bh b">B</div>
-            <div className="bh i">I</div>
-            <div className="bh n">N</div>
-            <div className="bh g">G</div>
-            <div className="bh o">O</div>
-          </div>
-          <div className="board-grid">{boardCellsRendered}</div>
-          <div className="left-foot">
-            <button className="refresh-btn" onClick={() => window.location.reload()}>↺ REFRESH</button>
-            <div className="gid-txt">Game <span>{gameNum}</span></div>
-          </div>
-        </div>
-
-        {/* Right: history + cards */}
-        <div className="game-right">
-          {/* Ball history */}
-          <div className="hist-row">
-            {[4,3,2,1,0].map(i => {
-              const n = histBalls[i]
-              const isLatest = i === 0
-              if (!n) return (
-                <div key={i} className={`hbub${isLatest ? ' latest' : ''}`}>--</div>
-              )
-              return (
-                <div key={i} className={`hbub ${bubClass(n)}${isLatest ? ' latest' : ''}`}>
-                  {letter(n)}{n}
-                </div>
-              )
-            })}
-          </div>
-
-          {/* Auto/manual toggle */}
-          <div className="auto-row">
-            <div className={`mode-badge ${autoMode ? 'auto' : 'manual'}`}>
-              {autoMode ? 'AUTO' : 'MANUAL'}
-            </div>
-            <div className={`tog ${autoMode ? 'on' : 'off'}`} onClick={handleToggleAuto}>
-              <div className="tog-knob" />
-            </div>
-          </div>
-
-          {/* Cartelas */}
-          <div className="cartelas-scroll">
-            {(isSpectator || forceSpec) ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--dim)', fontSize: '12px', fontWeight: 700 }}>
-                👁️ በዚህ ዙር ጨዋታ ተጀምሯል፡፡ አዲስ ዙር እስኪጀምር እዚሁ እጠብቁ፡፡
-              </div>
-            ) : cards && cards.map((card, ci) => (
-              <BingoCard
-                key={ci}
-                card={card}
-                cardNum={cardNums[ci] || (ci + 1)}
-                ci={ci}
-                drawn={drawn}
-                markedSet={markedSets[ci] || new Set([12])}
-                autoMode={autoMode}
-                gameActive={gameActive}
-                gameEnded={gameEnded}
-                onManualMark={handleManualMark}
-                onClaim={handleManualClaim}
-                winBlink={winBlinks[ci]}
-                claimReady={claimReady[ci]}
-              />
-            ))}
-          </div>
-        </div>
+      {/* Footer Info */}
+      <div style={{
+        marginTop: '40px',
+        padding: '16px',
+        background: '#f5f5f5',
+        borderRadius: '8px',
+        fontSize: '11px',
+        color: '#666',
+        lineHeight: '1.6',
+        textAlign: 'center'
+      }}>
+        <p style={{ margin: '0 0 8px 0' }}>
+          🎯 ከሞከር በደላ ወይም የሌላ ሰው ካርድ ይልወጡ
+        </p>
+        <p style={{ margin: '0 0 8px 0' }}>
+          💰 ሽልማቱ 80% ከጠቅላላ መግብያ - 20% ለ YDM
+        </p>
+        <p style={{ margin: '0' }}>
+          📱 Telebirr • CBE ብሎ ሜትር ተመልሰው ይጨምሩ
+        </p>
       </div>
-
-      {/* Footer ticker */}
-      <div className="game-footer">
-        <div className="live-tag">LIVE</div>
-        <div className="ticker-box">
-          <div className="ticker-txt">
-            🏆 ጃክፖቱ እየጠበቀ ነው — መጀመሪያ ቢንጎ በማለት ሽልማቱን ይውሰዱ!
-            &nbsp;&nbsp;&nbsp;
-            🎯 እያንዳንዱ ቁጥር ወሳኝ ነው — ትኩረትዎን አያጡ!
-            &nbsp;&nbsp;&nbsp;
-            💰 አሸናፊው ሙሉ ደራሹን ይወስዳል!
-            &nbsp;&nbsp;&nbsp;
-            ⚡ መልካም ዕድል ለሁሉም ተጫዋቾች!
-          </div>
-        </div>
-      </div>
-
-      {/* Winner overlay */}
-      <WinnerOverlay
-        show={overlayShown}
-        winners={winnersList}
-        playerKey={playerKey}
-        currentPrize={overlayPrize}
-        drawn={drawn}
-        cdSec={cdSec}
-      />
-    </>
+    </div>
   )
 }
