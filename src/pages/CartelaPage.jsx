@@ -1,26 +1,26 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { db } from '../firebase.js'; // Adjust relative path as needed
-import { ref, onValue, get, set, update, remove, serverTimestamp, runTransaction } from 'firebase/database';
+import { db } from '../firebase.js'; 
+import { ref, onValue, get, update, runTransaction, serverTimestamp } from 'firebase/database';
 
 const FIXED_FEE = 10;
-const MAX_CARDS = 450;
 const PAY_MARGIN = 0.8;
+const MIN_PLAYERS = 2;
 
-// Sanitize key for Realtime Database paths
 const sanitizeKey = (val) => (val || '').toString().replace(/[.#$[\]/]/g, '_');
 
-// Isolated Matrix Button Component to avoid global context tree re-renders
 const MatrixButton = React.memo(({ id, status, onClick }) => {
+  let className = "nc";
+  if (status === "selected") className = "nc selected";
+  if (status === "taken") className = "nc taken";
+  
   return (
-    <button
-      className="matrix-btn"
-      data-status={status}
-      disabled={status === "taken"}
+    <div
+      className={className}
       onClick={() => onClick(id)}
     >
       {id}
-    </button>
+    </div>
   );
 });
 
@@ -42,18 +42,16 @@ export default function CartelaPage() {
   const [profileName, setProfileName] = useState(user.name || 'Player');
   const [pCount, setPCount] = useState(0);
   const [gameActive, setGameActive] = useState(false);
-  const [cdSec, setCdSec] = useState(null);
   const [prize, setPrize] = useState(0);
   const [gameNum, setGameNum] = useState('--');
+  const [timerVal, setTimerVal] = useState('--');
+  const [loading, setLoading] = useState(true);
 
   const stateRef = useRef({});
   stateRef.current = { selectedCards, gameActive, pCount, bal, taken, prize, playerKey, user };
 
-  const cdTimer = useRef(null);
-
-  // Fetch Cartela configurations
+  // Fetch matrix structure
   useEffect(() => {
-    if (!playerKey) return;
     get(ref(db, 'cartelas')).then(snap => {
       if (snap.exists()) {
         const data = snap.val();
@@ -61,10 +59,11 @@ export default function CartelaPage() {
         Object.keys(data).forEach(k => { mapped[Number(k)] = data[k]; });
         setAllCards(mapped);
       }
-    });
-  }, [playerKey]);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
 
-  // Sync state cleanly via Atomic Write Transactions
+  // Atomic state tracking database transaction
   const syncSelection = useCallback(async (nextCards, prevCards) => {
     const pk = stateRef.current.playerKey;
     if (!pk) return;
@@ -86,7 +85,6 @@ export default function CartelaPage() {
     const cardNumbers = nextCards.map(c => c.id);
     const updates = {};
 
-    // Remove obsolete records
     Object.keys(stateRef.current.taken).forEach(k => {
       if (stateRef.current.taken[k] === pk) updates[`lobby/takenCards/${k}`] = null;
     });
@@ -110,7 +108,6 @@ export default function CartelaPage() {
   }, []);
 
   const onCardTap = useCallback((id) => {
-    if (stateRef.current.gameActive) return;
     const { taken: tk, selectedCards: sc, bal: currentBal, playerKey: pk } = stateRef.current;
     if (tk[id] && tk[id] !== pk) return;
 
@@ -120,16 +117,16 @@ export default function CartelaPage() {
     if (idx !== -1) {
       nextCards.splice(idx, 1);
     } else {
-      if (sc.length >= 4) return; // Limit rules configuration
+      if (sc.length >= 4) return; 
       if (currentBal < FIXED_FEE) return;
-      nextCards.push({ id, data: allCards[id] || {} });
+      nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } });
     }
 
     setSelectedCards(nextCards);
     syncSelection(nextCards, sc).catch(console.error);
   }, [allCards, syncSelection]);
 
-  // Real-time synchronization listeners
+  // Synchronized lifecycle loop 
   useEffect(() => {
     if (!playerKey) return;
 
@@ -147,64 +144,88 @@ export default function CartelaPage() {
       onValue(ref(db, 'lobby/players'), snap => {
         const data = snap.val() || {};
         const players = Object.values(data);
-        setPCount(players.length);
+        const count = players.length;
+        setPCount(count);
+        
         const totalCards = players.reduce((acc, p) => acc + (p.cardCount || 0), 0);
         setPrize(Math.floor(totalCards * FIXED_FEE * PAY_MARGIN));
+
+        // Edge monitoring optimization trigger: Handle multi-player sequence timers on backend
+        if (count >= MIN_PLAYERS) {
+          update(ref(db, 'activeGame'), { status: 'countdown' });
+        } else {
+          update(ref(db, 'activeGame'), { status: 'waiting', countdownSec: null });
+        }
       }),
       onValue(ref(db, 'activeGame/gameNum'), snap => {
         if (snap.val()) setGameNum(snap.val());
       }),
-      onValue(ref(db, 'activeGame/status'), snap => {
-        const status = snap.val();
-        if (status === 'countdown' || status === 'started') {
-          setGameActive(true);
-          if (status === 'started') {
-            localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
-            navigate('/game');
-          }
-        } else {
-          setGameActive(false);
-        }
-      }),
       onValue(ref(db, 'activeGame/countdownSec'), snap => {
         const val = snap.val();
-        setCdSec(val !== undefined && val > 0 ? val : null);
+        setTimerVal(val !== null && val !== undefined ? val : '--');
+      }),
+      onValue(ref(db, 'activeGame/status'), snap => {
+        if (snap.val() === 'started') {
+          localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
+          navigate('/game');
+        }
       })
     ];
 
-    return () => {
-      unsubs.forEach(fn => fn());
-      if (cdTimer.current) clearInterval(cdTimer.current);
-    };
+    return () => unsubs.forEach(fn => fn());
   }, [playerKey, navigate]);
 
-  const numbersArray = useMemo(() => Array.from({ length: 450 }, (_, i) => i + 1), []);
+  const numbersArray = useMemo(() => Array.from({ length: 90 }, (_, i) => i + 1), []);
 
   return (
-    <div style={{ background: '#060310', minHeight: '100vh', display: 'flex', flexDirection: 'column', color: '#ffffff', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif', overflow: 'hidden' }}>
+    <div style={{ background: '#060310', height: '100vh', display: 'flex', flexDirection: 'column', color: '#ffffff', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif', overflow: 'hidden' }}>
       <style>{`
         *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-        nav{background:rgba(8,4,18,0.95);backdrop-filter:blur(16px);border-bottom:1px solid rgba(255,255,255,0.08);padding:7px 10px;display:flex;align-items:center;justify-content:space-between;min-height:50px;}
-        .nav-group{display:flex;align-items:center;gap:5px;}
-        .profile-pill{display:flex;flex-direction:column;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.09);border-radius:9px;padding:4px 9px;max-width:88px;}
-        .profile-pill .lbl{font-size:7.5px;font-weight:800;color:#FFB800;text-transform:uppercase;line-height:1;margin-bottom:2px;}
-        .profile-pill .val{font-size:11px;font-weight:800;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-        .chip{display:flex;flex-direction:column;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.09);border-radius:9px;padding:4px 8px;min-width:50px;}
-        .chip .lbl{font-size:7.5px;font-weight:800;color:#7c8ca0;text-transform:uppercase;line-height:1;margin-bottom:2px;}
-        .chip .val{font-size:11px;font-weight:700;color:#fff;}
-        .chip.g{border-color:rgba(0,255,136,.28);background:rgba(0,255,136,.04);}.chip.g .val{color:#00ff88;}
-        .chip.au{border-color:rgba(255,184,0,.28);background:rgba(255,184,0,.04);}.chip.au .val{color:#FFB800;}
-        .chip.bl{border-color:rgba(0,212,255,.28);background:rgba(0,212,255,.04);}.chip.bl .val{color:#00d4ff;}
+        :root{--bg:#060310;--surface:rgba(255,255,255,0.04);--card:rgba(18,10,35,0.7);--border:rgba(255,255,255,0.10);--gold:#FFB800;--green:#00ff88;--red:#ff3366;--blue:#00d4ff;--purple:#9d4edd;--text:#ffffff;--dim:#7c8ca0;}
+        nav{background:rgba(8,4,18,0.95);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid rgba(255,255,255,0.08);padding:7px 10px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;gap:6px;min-height:50px;}
+        .nav-group{display:flex;align-items:center;gap:5px;flex-wrap:nowrap}
+        .profile-pill{display:flex;flex-direction:column;justify-content:center;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.09);border-radius:9px;padding:4px 9px;max-width:88px;}
+        .profile-pill .lbl{font-size:7.5px;font-weight:800;color:#FFB800;text-transform:uppercase;letter-spacing:.4px;line-height:1;margin-bottom:2px;}
+        .profile-pill .val{font-size:11px;font-weight:800;color:#fff;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .chip{display:flex;flex-direction:column;justify-content:center;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.09);border-radius:9px;padding:4px 8px;min-width:50px;}
+        .chip .lbl{font-size:7.5px;font-weight:800;color:#7c8ca0;text-transform:uppercase;letter-spacing:.4px;line-height:1;margin-bottom:2px}
+        .chip .val{font-size:11px;font-weight:700;color:#fff;line-height:1}
+        .chip.g{border-color:rgba(0,255,136,.28);background:rgba(0,255,136,.04);}.chip.g .val{color:#00ff88}
+        .chip.au{border-color:rgba(255,184,0,.28);background:rgba(255,184,0,.04);}.chip.au .val{color:#FFB800}
+        .chip.bl{border-color:rgba(0,212,255,.28);background:rgba(0,212,255,.04);}.chip.bl .val{color:#00d4ff}
         .timer-pill{background:rgba(255,51,102,.1);border:1px solid rgba(255,51,102,.3);border-radius:9px;padding:4px 8px;min-width:40px;height:32px;display:flex;align-items:center;justify-content:center;}
-        .timer-pill span{font-size:12px;font-weight:800;color:#ff3366;}
-        .scroll-area{flex:1;overflow-y:auto;padding:8px 8px 4px;}
-        .status-row{display:flex;align-items:center;gap:7px;margin-bottom:8px;}
+        .timer-pill span{font-size:12px;font-weight:800;color:#ff3366}
+        .scroll-area{flex:1;overflow-y:auto;padding:8px 8px 4px;overscroll-behavior:contain}
+        .status-row{display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap}
         .badge{background:rgba(157,78,221,.08);border:1px solid rgba(157,78,221,.25);border-radius:20px;padding:4px 10px;font-size:10.5px;font-weight:700;color:#d4c4f0;display:flex;align-items:center;gap:5px;}
-        .num-grid{display:grid;grid-template-columns:repeat(10,1fr);gap:3.5px;margin-bottom:12px;}
-        .matrix-btn{aspect-ratio:1;border-radius:7px;border:1px solid rgba(255,255,255,0.04);background:rgba(255,255,255,0.02);color:rgba(255,255,255,0.45);font-size:13.5px;font-weight:800;cursor:pointer;transition:all 0.05s ease;}
-        .matrix-btn[data-status="selected"]{background:#00d4ff !important;color:#000 !important;border-color:transparent;box-shadow:0 0 10px rgba(0,212,255,0.4);}
-        .matrix-btn[data-status="taken"]{background:#ff3366 !important;color:#fff !important;border-color:transparent;cursor:not-allowed;}
+        .num-grid{display:grid;grid-template-columns:repeat(10,1fr);gap:3.5px;}
+        .nc{background:#243f52;border:1px solid rgba(255,255,255,0.08);border-radius:6px;text-align:center;padding:7px 2px;font-size:10.5px;font-weight:700;cursor:pointer;color:#ffffff;transition:transform .12s,background .12s;user-select:none;-webkit-user-select:none;}
+        .nc:active{transform:scale(.82)}
+        .nc.taken{background:#ff003c;border-color:#ff3355;color:#ffffff;pointer-events:none;box-shadow:0 0 10px rgba(255,0,60,.45);}
+        .nc.selected{background:#ffffff;border-color:#ffffff;color:#000000;font-weight:800;box-shadow:0 0 12px rgba(255,255,255,.35);transform:scale(1.04);}
+        .panel{background:#0e0720;border-top:1.5px solid rgba(157,78,221,.4);padding:7px 8px;flex-shrink:0;box-shadow:0 -3px 20px rgba(0,0,0,.6);min-height:56px;max-height:190px;overflow:hidden;}
+        .mini-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:5px;width:100%;}
+        .mini-wrap{background:rgba(10,6,22,.7);border:1px solid rgba(157,78,221,.25);border-radius:7px;padding:4px;}
+        .mini-title{font-size:8.5px;color:#00d4ff;text-align:center;margin-bottom:2px;font-weight:800;letter-spacing:.4px}
+        .mini-table{border-collapse:separate;border-spacing:1.5px;margin:0 auto;width:100%;max-width:155px}
+        .mini-table th{font-size:7.5px;font-weight:800;text-align:center;padding:1px 0}
+        .mini-table th.b{color:#00d4ff}.mini-table th.i{color:#00ff88}.mini-table th.n{color:#FFB800}.mini-table th.g{color:#ff79c6}.mini-table th.o{color:#bd93f9}
+        .mini-table td{height:17px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:3px;text-align:center;font-size:7.5px;font-weight:700;color:#fff}
+        .mini-table td.free{background:rgba(255,184,0,.14);border-color:#FFB800;color:#FFB800;font-weight:900}
+        .panel-empty{font-size:10.5px;color:#7c8ca0;text-align:center;width:100%;display:block;padding:8px 0;line-height:1.5}
+        .loading-overlay{position:fixed;inset:0;background:#0b0b0f;display:flex;align-items:center;justify-content:center;z-index:9999;}
+        .spinner{width:34px;height:34px;border:3px solid rgba(255,215,0,0.25);border-top-color:#ffb800;border-radius:50%;animation:spin .7s linear infinite;}
+        @keyframes spin{to{transform:rotate(360deg)}}
       `}</style>
+
+      {loading && (
+        <div className="loading-overlay">
+          <div style={{ textAlign: 'center' }}>
+            <div className="spinner"></div>
+            <div style={{ fontSize: '12px', marginTop: '10px', letterSpacing: '3px', color: '#ffffff88' }}>LOADING...</div>
+          </div>
+        </div>
+      )}
 
       <nav>
         <div className="nav-group">
@@ -231,7 +252,7 @@ export default function CartelaPage() {
             <span className="val">{gameNum}</span>
           </div>
           <div className="timer-pill">
-            <span>{cdSec !== null ? `${cdSec}s` : '--'}</span>
+            <span>{timerVal}</span>
           </div>
         </div>
       </nav>
@@ -247,6 +268,43 @@ export default function CartelaPage() {
             else if (taken[id]) status = "taken";
             return <MatrixButton key={id} id={id} status={status} onClick={onCardTap} />;
           })}
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="mini-grid">
+          {selectedCards.length === 0 ? (
+            <span className="panel-empty">Tap a card number to select[cite: 1]</span>
+          ) : (
+            selectedCards.map((card, ci) => (
+              <div className="mini-wrap" key={card.id}>
+                <div className="mini-title">Card #{card.id}</div>
+                <table className="mini-table">
+                  <thead>
+                    <tr>
+                      <th className="b">B</th><th className="i">I</th>
+                      <th className="n">N</th><th className="g">G</th>
+                      <th className="o">O</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Array.from({ length: 5 }).map((_, r) => (
+                      <tr key={r}>
+                        {['b', 'i', 'n', 'g', 'o'].map((col, c) => {
+                          if (c === 2 && r === 2) {
+                            return <td key={c} className="free">FREE[cite: 1]</td>;
+                          }
+                          const colArr = card.data[col] || [];
+                          const val = (c === 2) ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r];
+                          return <td key={c}>{val || ''}</td>;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))
+          )}
         </div>
       </div>
     </div>
