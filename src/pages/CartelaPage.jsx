@@ -46,6 +46,10 @@ export default function CartelaPage() {
 
   const stateRef = useRef({});
   stateRef.current = { selectedCards, pCount, bal, taken, prize, playerKey, user };
+  
+  // Track master ticker state locally to safely handle server-write fallbacks
+  const countdownIntervalRef = useRef(null);
+  const isMasterTicker = useRef(false);
 
   useEffect(() => {
     get(ref(db, 'cartelas')).then(snap => {
@@ -121,7 +125,7 @@ export default function CartelaPage() {
     syncSelection(nextCards, sc).catch(console.error);
   }, [allCards, syncSelection]);
 
-  // Synchronized Real-time Core Loop
+  // Synchronized Real-time Core Loop & Tick Controller
   useEffect(() => {
     if (!playerKey) return;
 
@@ -145,18 +149,21 @@ export default function CartelaPage() {
         const totalCards = players.reduce((acc, p) => acc + (p.cardCount || 0), 0);
         setPrize(Math.floor(totalCards * FIXED_FEE * PAY_MARGIN));
 
-        // authoritative check: initialized safely by first matching player node
         if (count >= MIN_PLAYERS) {
           get(ref(db, 'activeGame/status')).then(statusSnap => {
             const currentStatus = statusSnap.val();
             if (currentStatus !== 'countdown' && currentStatus !== 'started') {
+              // Elect this player instance to drive the master database tick increments
+              isMasterTicker.current = true;
               update(ref(db, 'activeGame'), { 
                 status: 'countdown', 
-                countdownSec: 40 // Set specific 40-second configuration
+                countdownSec: 40 
               });
             }
           });
         } else {
+          isMasterTicker.current = false;
+          if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
           update(ref(db, 'activeGame'), { status: 'waiting', countdownSec: null });
         }
       }),
@@ -165,22 +172,43 @@ export default function CartelaPage() {
       }),
       onValue(ref(db, 'activeGame/countdownSec'), snap => {
         const val = snap.val();
-        setTimerVal(val !== null && val !== undefined ? `${val}s` : '--');
         
-        // Match authoritative zero-state block to force sync redirect layout engines
-        if (val === 0) {
-          update(ref(db, 'activeGame'), { status: 'started', started: true });
+        if (val !== null && val !== undefined) {
+          setTimerVal(`${val}s`);
+          
+          // Clear active timers and perform redirection exactly at zero
+          if (val <= 0) {
+            if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+            update(ref(db, 'activeGame'), { status: 'started', started: true });
+          }
+        } else {
+          setTimerVal('--');
         }
       }),
       onValue(ref(db, 'activeGame/status'), snap => {
         if (snap.val() === 'started') {
+          if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
           localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
           navigate('/game');
         }
       })
     ];
 
-    return () => unsubs.forEach(fn => fn());
+    // Master Ticker Loop to update the single database instance across all players
+    countdownIntervalRef.current = setInterval(() => {
+      if (!isMasterTicker.current) return;
+      
+      runTransaction(ref(db, 'activeGame/countdownSec'), (currentSec) => {
+        if (currentSec === null || currentSec === undefined) return null;
+        if (currentSec <= 0) return 0;
+        return currentSec - 1;
+      });
+    }, 1000);
+
+    return () => {
+      unsubs.forEach(fn => fn());
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    };
   }, [playerKey, navigate]);
 
   const numbersArray = useMemo(() => Array.from({ length: 450 }, (_, i) => i + 1), []);
