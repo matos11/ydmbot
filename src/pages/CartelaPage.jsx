@@ -6,7 +6,7 @@ import { ref, onValue, get, update, runTransaction, serverTimestamp } from 'fire
 const FIXED_FEE = 10;
 const PAY_MARGIN = 0.8;
 const MIN_PLAYERS = 2;
-const MAX_SELECTION_LIMIT = 2; // Strict selection rule cap
+const MAX_SELECTION_LIMIT = 2; 
 
 const sanitizeKey = (val) => (val || '').toString().replace(/[.#$[\]/]/g, '_');
 
@@ -16,10 +16,7 @@ const MatrixButton = React.memo(({ id, status, onClick }) => {
   if (status === "taken") className = "nc taken";
   
   return (
-    <div
-      className={className}
-      onClick={() => onClick(id)}
-    >
+    <div className={className} onClick={() => onClick(id)}>
       {id}
     </div>
   );
@@ -42,14 +39,13 @@ export default function CartelaPage() {
   const [bal, setBal] = useState(0);
   const [profileName, setProfileName] = useState(user.name || 'Player');
   const [pCount, setPCount] = useState(0);
-  const [gameActive, setGameActive] = useState(false);
   const [prize, setPrize] = useState(0);
   const [gameNum, setGameNum] = useState('--');
   const [timerVal, setTimerVal] = useState('--');
   const [loading, setLoading] = useState(true);
 
   const stateRef = useRef({});
-  stateRef.current = { selectedCards, gameActive, pCount, bal, taken, prize, playerKey, user };
+  stateRef.current = { selectedCards, pCount, bal, taken, prize, playerKey, user };
 
   useEffect(() => {
     get(ref(db, 'cartelas')).then(snap => {
@@ -116,7 +112,7 @@ export default function CartelaPage() {
     if (idx !== -1) {
       nextCards.splice(idx, 1);
     } else {
-      if (sc.length >= MAX_SELECTION_LIMIT) return; // Prevent selection past max safety value
+      if (sc.length >= MAX_SELECTION_LIMIT) return; 
       if (currentBal < FIXED_FEE) return;
       nextCards.push({ id, data: allCards[id] || { b:[], i:[], n:[], g:[], o:[] } });
     }
@@ -125,6 +121,7 @@ export default function CartelaPage() {
     syncSelection(nextCards, sc).catch(console.error);
   }, [allCards, syncSelection]);
 
+  // Synchronized Real-time Core Loop
   useEffect(() => {
     if (!playerKey) return;
 
@@ -148,8 +145,17 @@ export default function CartelaPage() {
         const totalCards = players.reduce((acc, p) => acc + (p.cardCount || 0), 0);
         setPrize(Math.floor(totalCards * FIXED_FEE * PAY_MARGIN));
 
+        // authoritative check: initialized safely by first matching player node
         if (count >= MIN_PLAYERS) {
-          update(ref(db, 'activeGame'), { status: 'countdown' });
+          get(ref(db, 'activeGame/status')).then(statusSnap => {
+            const currentStatus = statusSnap.val();
+            if (currentStatus !== 'countdown' && currentStatus !== 'started') {
+              update(ref(db, 'activeGame'), { 
+                status: 'countdown', 
+                countdownSec: 40 // Set specific 40-second configuration
+              });
+            }
+          });
         } else {
           update(ref(db, 'activeGame'), { status: 'waiting', countdownSec: null });
         }
@@ -159,7 +165,12 @@ export default function CartelaPage() {
       }),
       onValue(ref(db, 'activeGame/countdownSec'), snap => {
         const val = snap.val();
-        setTimerVal(val !== null && val !== undefined ? val : '--');
+        setTimerVal(val !== null && val !== undefined ? `${val}s` : '--');
+        
+        // Match authoritative zero-state block to force sync redirect layout engines
+        if (val === 0) {
+          update(ref(db, 'activeGame'), { status: 'started', started: true });
+        }
       }),
       onValue(ref(db, 'activeGame/status'), snap => {
         if (snap.val() === 'started') {
@@ -172,7 +183,6 @@ export default function CartelaPage() {
     return () => unsubs.forEach(fn => fn());
   }, [playerKey, navigate]);
 
-  // Scaled Upward to accommodate 450 items
   const numbersArray = useMemo(() => Array.from({ length: 450 }, (_, i) => i + 1), []);
 
   return (
@@ -190,8 +200,8 @@ export default function CartelaPage() {
         .chip.g{border-color:rgba(0,255,136,.28);background:rgba(0,255,136,.04);}.chip.g .val{color:#00ff88}
         .chip.au{border-color:rgba(255,184,0,.28);background:rgba(255,184,0,.04);}.chip.au .val{color:#FFB800}
         .chip.bl{border-color:rgba(0,212,255,.28);background:rgba(0,212,255,.04);}.chip.bl .val{color:#00d4ff}
-        .timer-pill{background:rgba(255,51,102,.1);border:1px solid rgba(255,51,102,.3);border-radius:9px;padding:4px 8px;min-width:40px;height:32px;display:flex;align-items:center;justify-content:center;}
-        .timer-pill span{font-size:12px;font-weight:800;color:#ff3366}
+        .timer-pill{background:rgba(255,51,102,.1);border:1px solid rgba(255,51,102,.3);border-radius:9px;padding:4px 8px;min-width:48px;height:32px;display:flex;align-items:center;justify-content:center;}
+        .timer-pill span{font-size:11px;font-weight:800;color:#ff3366}
         .scroll-area{flex:1;overflow-y:auto;padding:8px 8px 4px;overscroll-behavior:contain}
         .status-row{display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap}
         .badge{background:rgba(157,78,221,.08);border:1px solid rgba(157,78,221,.25);border-radius:20px;padding:4px 10px;font-size:10.5px;font-weight:700;color:#d4c4f0;display:flex;align-items:center;gap:5px;}
@@ -271,7 +281,7 @@ export default function CartelaPage() {
       <div className="panel">
         <div className="mini-grid">
           {selectedCards.length === 0 ? (
-            <span className="panel-empty">Tap matrix values above to allocate up to 2 unique layouts.</span>
+            <span className="panel-empty">Tap matrix numbers above to select cards.</span>
           ) : (
             selectedCards.map((card) => (
               <div className="mini-wrap" key={card.id}>
@@ -288,7 +298,6 @@ export default function CartelaPage() {
                     {Array.from({ length: 5 }).map((_, r) => (
                       <tr key={r}>
                         {['b', 'i', 'n', 'g', 'o'].map((col, c) => {
-                          // Centered Center Structural Star Logic
                           if (c === 2 && r === 2) {
                             return <td key={c} className="free">⭐</td>;
                           }
