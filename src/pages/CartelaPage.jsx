@@ -47,7 +47,7 @@ export default function CartelaPage() {
   const stateRef = useRef({});
   stateRef.current = { selectedCards, pCount, bal, taken, prize, playerKey, user };
   
-  const countdownIntervalRef = useRef(null);
+  const clientTimerRef = useRef(null);
 
   // Fetch all 450 cartelas on mount
   useEffect(() => {
@@ -128,6 +128,30 @@ export default function CartelaPage() {
   useEffect(() => {
     if (!playerKey) return;
 
+    // Local client timer management depending on authoritative server target values
+    let targetEndTimestamp = null;
+
+    if (clientTimerRef.current) clearInterval(clientTimerRef.current);
+    clientTimerRef.current = setInterval(() => {
+      if (!targetEndTimestamp) return;
+
+      const now = Date.now();
+      const remainingSec = Math.max(0, Math.ceil((targetEndTimestamp - now) / 1000));
+
+      if (remainingSec > 0) {
+        setTimerVal(`${remainingSec}s`);
+      } else {
+        setTimerVal('0s');
+        // Authoritatively transition into a safe game-start routine
+        runTransaction(ref(db, 'activeGame'), (game) => {
+          if (!game || game.status !== 'countdown') return game;
+          game.status = 'started';
+          game.started = true;
+          return game;
+        });
+      }
+    }, 250);
+
     const unsubs = [
       onValue(ref(db, `users/${playerKey}`), snap => {
         if (snap.exists()) {
@@ -148,39 +172,36 @@ export default function CartelaPage() {
         const totalCards = players.reduce((acc, p) => acc + (p.cardCount || 0), 0);
         setPrize(Math.floor(totalCards * FIXED_FEE * PAY_MARGIN));
 
-        // Atomic Transaction initialization
+        // Atomic Initialization using target anchors instead of loops
         if (count >= MIN_PLAYERS) {
           runTransaction(ref(db, 'activeGame'), (currentData) => {
-            if (!currentData) {
-              return { status: 'countdown', countdownSec: 40, started: false };
-            }
-            if (currentData.status !== 'countdown' && currentData.status !== 'started') {
-              currentData.status = 'countdown';
-              currentData.countdownSec = 40;
-              currentData.started = false;
+            if (!currentData || currentData.status === 'waiting') {
+              const gameTargetTime = Date.now() + 40000; // Authoritative 40-second offset seed
+              return { 
+                status: 'countdown', 
+                targetEndTime: gameTargetTime,
+                started: false 
+              };
             }
             return currentData;
           });
         } else {
-          update(ref(db, 'activeGame'), { status: 'waiting', countdownSec: null });
+          update(ref(db, 'activeGame'), { status: 'waiting', targetEndTime: null });
         }
       }),
       onValue(ref(db, 'activeGame/gameNum'), snap => {
         if (snap.val()) setGameNum(snap.val());
       }),
-      onValue(ref(db, 'activeGame/countdownSec'), snap => {
-        const val = snap.val();
-        if (val !== null && val !== undefined) {
-          setTimerVal(`${val}s`);
-          if (val <= 0) {
-            update(ref(db, 'activeGame'), { status: 'started', started: true });
-          }
+      onValue(ref(db, 'activeGame'), snap => {
+        const game = snap.val() || {};
+        if (game.status === 'countdown' && game.targetEndTime) {
+          targetEndTimestamp = game.targetEndTime;
         } else {
+          targetEndTimestamp = null;
           setTimerVal('--');
         }
-      }),
-      onValue(ref(db, 'activeGame/status'), snap => {
-        if (snap.val() === 'started') {
+
+        if (game.status === 'started') {
           // Save complex selected cartelas to localStorage
           localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
           
@@ -197,28 +218,9 @@ export default function CartelaPage() {
       })
     ];
 
-    // Authoritative Concurrent Decoupled Master Ticker
-    countdownIntervalRef.current = setInterval(() => {
-      runTransaction(ref(db, 'activeGame'), (game) => {
-        if (!game || game.status !== 'countdown') return game;
-        if (game.countdownSec === undefined || game.countdownSec === null) {
-          game.countdownSec = 40;
-          return game;
-        }
-        if (game.countdownSec <= 0) {
-          game.status = 'started';
-          game.started = true;
-          game.countdownSec = 0;
-        } else {
-          game.countdownSec = game.countdownSec - 1;
-        }
-        return game;
-      });
-    }, 1000);
-
     return () => {
       unsubs.forEach(fn => fn());
-      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      if (clientTimerRef.current) clearInterval(clientTimerRef.current);
     };
   }, [playerKey, navigate]);
 
