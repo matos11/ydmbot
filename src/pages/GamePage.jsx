@@ -10,7 +10,7 @@ import {
   PATTERNS, playNum, playWinnerSound, startFireworks, REDIRECT_SEC
 } from '../utils.js'
 
-// ── Loading Screen ────────────────────────────────────────
+// ── YDM Splash Loading Screen ──────────────────────────────
 function LoadingScreen() {
   return (
     <div style={{
@@ -20,20 +20,37 @@ function LoadingScreen() {
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+      background: 'linear-gradient(135deg, #0b071e 0%, #060310 100%)',
       color: '#fff',
-      fontFamily: 'Poppins, sans-serif'
+      fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
     }}>
-      <div style={{ marginBottom: '30px', fontSize: '48px' }}>🎲</div>
-      <h2 style={{ marginBottom: '10px', fontSize: '24px' }}>ጨዋታ በመጭነት ላይ</h2>
-      <p style={{ marginBottom: '30px', color: '#aaa', fontSize: '14px' }}>Game Loading...</p>
+      <div style={{ 
+        fontSize: '42px', 
+        fontWeight: '900', 
+        letterSpacing: '4px', 
+        color: '#FFB800',
+        textShadow: '0 0 20px rgba(255,184,0,0.4)',
+        marginBottom: '5px'
+      }}>
+        YDM BINGO
+      </div>
+      <div style={{ 
+        fontSize: '11px', 
+        letterSpacing: '5px', 
+        color: '#00d4ff', 
+        fontWeight: '700',
+        textTransform: 'uppercase',
+        marginBottom: '40px'
+      }}>
+        ጨዋታው እየተጀመረ ነው
+      </div>
       <div style={{
-        width: '40px',
-        height: '40px',
-        border: '4px solid #ffd700',
-        borderTop: '4px solid transparent',
+        width: '36px',
+        height: '36px',
+        border: '3px solid rgba(255,184,0,0.15)',
+        borderTop: '3px solid #FFB800',
         borderRadius: '50%',
-        animation: 'spin 1s linear infinite'
+        animation: 'spin .7s linear infinite'
       }}></div>
       <style>{`
         @keyframes spin {
@@ -55,27 +72,27 @@ function ErrorScreen({ message, onRetry }) {
       flexDirection: 'column',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+      background: '#060310',
       color: '#fff',
-      fontFamily: 'Poppins, sans-serif',
+      fontFamily: 'sans-serif',
       padding: '20px'
     }}>
-      <div style={{ marginBottom: '30px', fontSize: '48px' }}>⚠️</div>
-      <h2 style={{ marginBottom: '10px', fontSize: '24px' }}>ስህተት ተከስቷል</h2>
-      <p style={{ marginBottom: '20px', color: '#aaa', fontSize: '14px', textAlign: 'center', maxWidth: '300px' }}>
+      <div style={{ marginBottom: '20px', fontSize: '40px' }}>⚠️</div>
+      <h2 style={{ marginBottom: '10px', fontSize: '20px', color: '#ff3366' }}>ስህተት ተከስቷል</h2>
+      <p style={{ marginBottom: '25px', color: '#7c8ca0', fontSize: '13px', textAlign: 'center' }}>
         {message}
       </p>
       <button
         onClick={onRetry}
         style={{
-          padding: '12px 30px',
-          background: '#ffd700',
+          padding: '10px 24px',
+          background: '#FFB800',
           color: '#000',
           border: 'none',
-          borderRadius: '8px',
-          fontWeight: 'bold',
+          borderRadius: '6px',
+          fontWeight: '800',
           cursor: 'pointer',
-          fontSize: '16px'
+          fontSize: '14px'
         }}
       >
         🔄 ድጋሚ ሞክር
@@ -273,19 +290,14 @@ function WinnerOverlay({ show, winners, playerKey, currentPrize, drawn, cdSec })
   )
 }
 
-// ════════════════════════════════════════════════════════
-//  GAME PAGE (MAIN ENGINE)
-// ════════════════════════════════════════════════════════
 export default function GamePage() {
   const navigate      = useNavigate()
   const [searchParams] = useSearchParams()
   const forceSpec     = searchParams.get('spectator') === 'true'
 
-  // ── Session data hydration from URL Parameters & localStorage ──────────
   const user = (() => { try { return JSON.parse(localStorage.getItem('bingoUser') || '{}') } catch { return {} } })()
   const rawCards = (() => { try { return JSON.parse(localStorage.getItem('selectedCartelas') || 'null') } catch { return null } })()
   
-  // Extract configuration parameters dispatched directly from CartelaPage
   const urlPlayers = searchParams.get('players') || '0'
   const urlBet     = searchParams.get('bet') || '10'
   const urlDerash  = searchParams.get('derash') || '0'
@@ -299,14 +311,12 @@ export default function GamePage() {
 
   const isSpectator = !cards || cards.length === 0
 
-  // ── UI Real-time States (Pre-Hydrated with context url elements) ─────────
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const [drawn, setDrawn]             = useState([])
   const [isMuted, setIsMuted]         = useState(true)
   const [autoMode, setAutoMode]       = useState(false)
   
-  // Directly ties default metrics to the explicit properties passed via CartelaPage
   const [currentPrize, setCurrentPrize] = useState(parseInt(urlDerash))
   const [playerCount, setPlayerCount]   = useState(parseInt(urlPlayers))
   const [gameNum, setGameNum]           = useState('--')
@@ -316,25 +326,19 @@ export default function GamePage() {
 
   const RECONNECT_KEY = `ydm_gamestate_${gameId}`
 
-  // ── Card marking state ───────────────────────────────────
-  const [markedSets, setMarkedSets]   = useState(() =>
-    cards ? cards.map(() => new Set([12])) : []
-  )
+  const [markedSets, setMarkedSets]   = useState(() => cards ? cards.map(() => new Set([12])) : [])
   const [winBlinks, setWinBlinks]     = useState(() => cards ? cards.map(() => null) : [])
   const [claimReady, setClaimReady]   = useState(() => cards ? cards.map(() => false) : [])
 
-  // ── Game flow state ───────────────────────────────────────
   const [gameActive, setGameActive]   = useState(false)
   const [gameEnded, setGameEnded]     = useState(false)
   const [gameStarted, setGameStarted] = useState(false)
 
-  // ── Winner overlay state ──────────────────────────────────
   const [overlayShown, setOverlayShown] = useState(false)
   const [winnersList, setWinnersList]   = useState([])
   const [overlayPrize, setOverlayPrize] = useState(0)
   const [cdSec, setCdSec]               = useState(REDIRECT_SEC)
 
-  // ── Safe Core Pipeline Reference State Hooks ───────────────────────────────────
   const cleanupDoneRef  = useRef(false)
   const iAmTheEnderRef  = useRef(false)
   const overlayShownRef = useRef(false)
@@ -347,8 +351,8 @@ export default function GamePage() {
   const autoTriggered   = useRef({})
   const cdTimerRef      = useRef(null)
   const syncTickerRef   = useRef(null)
+  const drawLoopRef     = useRef(null)
 
-  // Keep refs in sync
   useEffect(() => { drawnRef.current = drawn }, [drawn])
   useEffect(() => { markedSetsRef.current = markedSets }, [markedSets])
   useEffect(() => { autoModeRef.current = autoMode }, [autoMode])
@@ -356,7 +360,6 @@ export default function GamePage() {
   useEffect(() => { gameActiveRef.current = gameActive }, [gameActive])
   useEffect(() => { gameStartedRef.current = gameStarted }, [gameStarted])
 
-  // ── Audio context unlock ─────────────────────────────────
   useEffect(() => {
     const unlock = () => { try { new (window.AudioContext || window.webkitAudioContext)() } catch (e) {} }
     document.addEventListener('touchstart', unlock, { once: true })
@@ -367,7 +370,6 @@ export default function GamePage() {
     }
   }, [])
 
-  // ── Persist / restore state ───────────────────────────────
   function persistState(newDrawn, newMarked) {
     if (gameEndedRef.current || isSpectator || forceSpec || !cards || !gameId) return
     try {
@@ -398,14 +400,12 @@ export default function GamePage() {
     } catch (e) { return false }
   }
 
-  // ── History bubbles ───────────────────────────────────────
   function updateHistFrom(newDrawn) {
     const last5 = [...newDrawn].reverse().slice(0, 5)
     setHistBalls(last5)
     setCalledCount(`${newDrawn.length}/75`)
   }
 
-  // ── Check win for a card ──────────────────────────────────
   function recomputeClaimReady(newMarked) {
     if (!cards) return
     const newReady = newMarked.map(ms => !!PATTERNS.find(p => p.i.every(i => ms.has(i))))
@@ -413,7 +413,6 @@ export default function GamePage() {
     return newReady
   }
 
-  // ── Auto-trigger bingo after blink ───────────────────────
   function triggerAutoBingo(ci, win, newMarked) {
     if (autoTriggered.current[ci]) return
     autoTriggered.current[ci] = true
@@ -432,7 +431,6 @@ export default function GamePage() {
     }, 2000)
   }
 
-  // ── Manual mark a cell ───────────────────────────────────
   function handleManualMark(ci, idx, val) {
     if (!gameActiveRef.current || autoModeRef.current || gameEndedRef.current) return
     if (!drawnRef.current.includes(val)) return
@@ -451,7 +449,6 @@ export default function GamePage() {
     })
   }
 
-  // ── Manual claim ─────────────────────────────────────────
   function handleManualClaim(ci) {
     if (!gameActiveRef.current || autoModeRef.current || autoTriggered.current[ci] || gameEndedRef.current) return
     const ms  = markedSetsRef.current[ci]
@@ -469,7 +466,6 @@ export default function GamePage() {
     }, 2000)
   }
 
-  // ── Submit bingo claim to Firebase ───────────────────────
   async function doClaim(ci, patName, patIdx, currentMarked) {
     if (!gameActiveRef.current || gameEndedRef.current) return
     const card = cards[ci]
@@ -498,7 +494,6 @@ export default function GamePage() {
     if (tx.committed) iAmTheEnderRef.current = true
   }
 
-  // ── Toggle auto mode ─────────────────────────────────────
   function handleToggleAuto() {
     const newAuto = !autoModeRef.current
     setAutoMode(newAuto)
@@ -536,7 +531,6 @@ export default function GamePage() {
     })
   }
 
-  // ── Safe redirect ─────────────────────────────────────────
   function safeRedirect() {
     if (cleanupDoneRef.current) return
     cleanupDoneRef.current = true
@@ -558,7 +552,6 @@ export default function GamePage() {
     safeRedirect()
   }
 
-  // ── Start overlay countdown ───────────────────────────────
   function startOverlayCountdown() {
     let remaining = REDIRECT_SEC
     setCdSec(remaining)
@@ -578,7 +571,6 @@ export default function GamePage() {
   const overlayPrizeRef = useRef(0)
   useEffect(() => { overlayPrizeRef.current = currentPrize }, [currentPrize])
 
-  // ── Handle winners ────────────────────────────────────────
   async function handleWinners(winnersMap) {
     if (overlayShownRef.current) return
     overlayShownRef.current = true
@@ -588,6 +580,7 @@ export default function GamePage() {
     setGameEnded(true)
     setGameActive(false)
     if (syncTickerRef.current) { clearInterval(syncTickerRef.current); syncTickerRef.current = null }
+    if (drawLoopRef.current) { clearInterval(drawLoopRef.current); drawLoopRef.current = null }
 
     const wList = Object.values(winnersMap || {})
     if (!wList.length) { safeRedirect(); return }
@@ -618,11 +611,11 @@ export default function GamePage() {
     iAmTheEnderRef.current = true
     setGameEnded(true); setGameActive(false)
     if (syncTickerRef.current) { clearInterval(syncTickerRef.current); syncTickerRef.current = null }
+    if (drawLoopRef.current) { clearInterval(drawLoopRef.current); drawLoopRef.current = null }
     await set(ref(db, 'activeGame/ended'), true)
     setTimeout(() => { if (!overlayShownRef.current) safeRedirect() }, 8000)
   }
 
-  // ── Reapply drawn to cards (reconnect) ───────────────────
   function reapplyToCards(currentDrawn, currentMarked, currentAuto) {
     if (!cards) return currentMarked
     const newMarked = currentMarked.map((ms, ci) => {
@@ -648,7 +641,6 @@ export default function GamePage() {
     return newMarked
   }
 
-  // ── Connection monitor ────────────────────────────────────
   function setupConnectionMonitor() {
     const connRef = ref(db, '.info/connected')
     let wasOffline = false
@@ -795,6 +787,7 @@ export default function GamePage() {
             gameEndedRef.current = true; gameActiveRef.current = false
             setGameEnded(true); setGameActive(false)
             if (syncTickerRef.current) { clearInterval(syncTickerRef.current); syncTickerRef.current = null }
+            if (drawLoopRef.current) { clearInterval(drawLoopRef.current); drawLoopRef.current = null }
             const wc = await get(ref(db, 'activeGame/winners'))
             if (!wc.exists()) setTimeout(safeRedirect, 1000)
             else if (!overlayShownRef.current) handleWinners(wc.val())
@@ -808,7 +801,7 @@ export default function GamePage() {
           }
         })
 
-        // Authoritative Time Offset Synchronization Loop 
+        // Hostless Time Anchor Synchronization Loop
         let targetEndTimestamp = null;
         const unsubCountdown = onValue(ref(db, 'activeGame/targetEndTime'), snap => {
           targetEndTimestamp = snap.val();
@@ -819,16 +812,56 @@ export default function GamePage() {
           if (!targetEndTimestamp || gameStartedRef.current) return;
           const remainingSec = Math.max(0, Math.ceil((targetEndTimestamp - Date.now()) / 1000));
           if (remainingSec <= 0) {
+            // First device to register expiration builds the secure match payload
             runTransaction(ref(db, 'activeGame'), (game) => {
-              if (!game || game.status !== 'countdown') return game;
-              game.status = 'started';
-              game.started = true;
+              if (!game) return game;
+              if (game.status === 'countdown') {
+                game.status = 'started';
+                game.started = true;
+                // Generate a shared authoritative pseudo-random collection of 75 elements
+                if (!game.ballsToDraw) {
+                  const arr = Array.from({ length: 75 }, (_, i) => i + 1);
+                  for (let i = arr.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [arr[i], arr[j]] = [arr[j], arr[i]];
+                  }
+                  game.ballsToDraw = arr;
+                  game.nextBallIndex = 0;
+                }
+              }
               return game;
             });
           }
         }, 250);
 
-        // Live parameter tracking queries
+        // Hostless stream listener that triggers balls into activeGame/drawnNumbers sequentially
+        if (drawLoopRef.current) clearInterval(drawLoopRef.current);
+        drawLoopRef.current = setInterval(async () => {
+          if (!gameStartedRef.current || gameEndedRef.current) return;
+          
+          const snap = await get(ref(db, 'activeGame'));
+          if (!snap.exists()) return;
+          const game = snap.val();
+          if (game.status !== 'started' || !game.ballsToDraw) return;
+          
+          const idx = game.nextBallIndex ?? 0;
+          if (idx >= game.ballsToDraw.length) return;
+          
+          // Secure a transaction lock to draw the next ball authoritatively without overlap
+          runTransaction(ref(db, 'activeGame/nextBallIndex'), (curIdx) => {
+            if (curIdx === null || curIdx === undefined) return 0;
+            if (curIdx === idx) {
+              const ballNumber = game.ballsToDraw[idx];
+              push(ref(db, 'activeGame/drawnNumbers'), {
+                number: ballNumber,
+                drawnAt: serverTimestamp()
+              });
+              return curIdx + 1;
+            }
+            return curIdx;
+          });
+        }, 3500); // Draws a new bingo ball every 3.5 seconds
+
         const unsubMeta = onValue(ref(db, 'activeGame/gameNum'), snap => {
           if (snap.exists()) {
             const num = snap.val()
@@ -862,6 +895,7 @@ export default function GamePage() {
           unsubPlayers()
           unsubTaken()
           if (syncTickerRef.current) clearInterval(syncTickerRef.current)
+          if (drawLoopRef.current) clearInterval(drawLoopRef.current)
           if (cdTimerRef.current) clearInterval(cdTimerRef.current)
         }
       } catch (error) {
@@ -916,7 +950,6 @@ export default function GamePage() {
       </div>
 
       <div className="game-main">
-        {/* Left Board Panel */}
         <div className="game-left">
           <div className="board-hdr">
             <div className="bh b">B</div>
@@ -932,7 +965,6 @@ export default function GamePage() {
           </div>
         </div>
 
-        {/* Right Tracking Controls */}
         <div className="game-right">
           <div className="hist-row">
             {[4,3,2,1,0].map(i => {

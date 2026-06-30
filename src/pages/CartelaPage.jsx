@@ -200,21 +200,17 @@ export default function CartelaPage() {
           targetEndTimestamp = null;
           setTimerVal('--');
         }
-
-        if (game.status === 'started') {
-          // Save complex selected cartelas to localStorage
-          localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
-          
-          // Formulate light numeric state query targets
-          const params = new URLSearchParams({
-            players: stateRef.current.pCount.toString(),
-            bet: FIXED_FEE.toString(),
-            derash: stateRef.current.prize.toString()
-          });
-          
-          // Hand-off control pipeline to GamePage with query items attached
-          navigate(`/game?${params.toString()}`);
-        }
+if (game.status === 'started') {
+  localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
+  
+  const params = new URLSearchParams({
+    players: stateRef.current.pCount.toString(),
+    bet: FIXED_FEE.toString(),
+    derash: stateRef.current.prize.toString()
+  });
+  
+  navigate(`/game?${params.toString()}`);
+}
       })
     ];
 
