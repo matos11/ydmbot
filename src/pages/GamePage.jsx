@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { db } from '../firebase.js'
 import {
@@ -10,8 +10,80 @@ import {
   PATTERNS, playNum, playWinnerSound, startFireworks, REDIRECT_SEC
 } from '../utils.js'
 
+const COLS = ['b', 'i', 'n', 'g', 'o']
+
+// Build a flat 25-cell representation of a card once, instead of re-deriving
+// the b/i/n/g/o column mapping on every render / every drawn ball.
+function buildFlatCard(card) {
+  const cells = []
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      const idx = r * 5 + c
+      if (idx === 12) {
+        cells.push({ idx, val: 'FREE', isFree: true })
+        continue
+      }
+      const colArr = card[COLS[c]]
+      const raw = c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r]
+      cells.push({ idx, val: parseInt(raw), isFree: false })
+    }
+  }
+  return cells
+}
+
+function shuffledBalls() {
+  const arr = Array.from({ length: 75 }, (_, i) => i + 1)
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
+
+// ── Shared animation styles (kept local so this file stays self-contained) ─
+function GameAnimStyles() {
+  return (
+    <style>{`
+      @keyframes ballPopIn {
+        0%   { transform: scale(0.3) rotate(-8deg); opacity: 0; }
+        55%  { transform: scale(1.15) rotate(3deg); opacity: 1; }
+        75%  { transform: scale(0.94) rotate(-1deg); }
+        100% { transform: scale(1) rotate(0deg); }
+      }
+      .hbub.pop-anim { animation: ballPopIn 0.5s cubic-bezier(.34,1.56,.64,1) both; }
+
+      @keyframes cellCalledPulse {
+        0%   { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,184,0,0.65); }
+        40%  { transform: scale(1.25); box-shadow: 0 0 0 6px rgba(255,184,0,0.25); }
+        100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,184,0,0); }
+      }
+      .bnum.just-called { animation: cellCalledPulse 0.8s ease-out; }
+
+      @keyframes softFadeIn {
+        from { opacity: 0; transform: translateY(-4px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      .starting-banner {
+        animation: softFadeIn 0.3s ease-out both;
+        display: flex; align-items: center; justify-content: center; gap: 8px;
+        background: rgba(255,184,0,0.1);
+        border: 1px solid rgba(255,184,0,0.35);
+        color: #FFB800; font-weight: 800; font-size: 12px;
+        padding: 8px 10px; border-radius: 8px; margin-bottom: 8px;
+      }
+      .sync-badge {
+        position: fixed; top: 10px; right: 10px; z-index: 40;
+        background: rgba(0,212,255,0.15); border: 1px solid rgba(0,212,255,0.4);
+        color: #00d4ff; font-size: 11px; font-weight: 700;
+        padding: 5px 10px; border-radius: 20px;
+        animation: softFadeIn 0.25s ease-out both;
+      }
+    `}</style>
+  )
+}
+
 // ── YDM Splash Loading Screen ──────────────────────────────
-function LoadingScreen() {
+function LoadingScreen({ label }) {
   return (
     <div style={{
       width: '100vw',
@@ -24,25 +96,25 @@ function LoadingScreen() {
       color: '#fff',
       fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
     }}>
-      <div style={{ 
-        fontSize: '42px', 
-        fontWeight: '900', 
-        letterSpacing: '4px', 
+      <div style={{
+        fontSize: '42px',
+        fontWeight: '900',
+        letterSpacing: '4px',
         color: '#FFB800',
         textShadow: '0 0 20px rgba(255,184,0,0.4)',
         marginBottom: '5px'
       }}>
         YDM BINGO
       </div>
-      <div style={{ 
-        fontSize: '11px', 
-        letterSpacing: '5px', 
-        color: '#00d4ff', 
+      <div style={{
+        fontSize: '11px',
+        letterSpacing: '5px',
+        color: '#00d4ff',
         fontWeight: '700',
         textTransform: 'uppercase',
         marginBottom: '40px'
       }}>
-        ጨዋታው እየተጀመረ ነው
+        {label || 'ጨዋታው እየተጀመረ ነው'}
       </div>
       <div style={{
         width: '36px',
@@ -102,17 +174,17 @@ function ErrorScreen({ message, onRetry }) {
 }
 
 // ── Winner overlay card table ─────────────────────────────
-function WoTable({ flat, pi, drawn }) {
+const WoTable = React.memo(function WoTable({ flat, pi, drawnSet }) {
   const rows = []
   for (let r = 0; r < 5; r++) {
     const cells = []
     for (let c = 0; c < 5; c++) {
       const idx = r * 5 + c
-      const v   = flat[idx] || ''
+      const v = flat[idx] || ''
       let cls = ''
       if (v === 'FREE' || idx === 12) cls = 'wc-free'
       else if (pi && pi.includes(idx)) cls = 'wc-win'
-      else if (drawn.includes(parseInt(v))) cls = 'wc-called'
+      else if (drawnSet.has(parseInt(v))) cls = 'wc-called'
       cells.push(<td key={c} className={cls}>{v === 'FREE' ? 'F' : v}</td>)
     }
     rows.push(<tr key={r}>{cells}</tr>)
@@ -123,11 +195,13 @@ function WoTable({ flat, pi, drawn }) {
       <tbody>{rows}</tbody>
     </table>
   )
-}
+})
 
 // ── Bingo card table ──────────────────────────────────────
-function BingoCard({ card, cardNum, ci, drawn, markedSet, autoMode, gameActive, gameEnded, onManualMark, onClaim, winBlink, claimReady }) {
-  const cols = ['b','i','n','g','o']
+const BingoCard = React.memo(function BingoCard({
+  flatCells, cardNum, ci, drawnSet, markedSet, autoMode, gameActive, gameEnded,
+  onManualMark, onClaim, winBlink, claimReady
+}) {
   const rows = []
   for (let r = 0; r < 5; r++) {
     const cells = []
@@ -137,11 +211,10 @@ function BingoCard({ card, cardNum, ci, drawn, markedSet, autoMode, gameActive, 
         cells.push(<td key={c} className="free" data-val="FREE">F</td>)
         continue
       }
-      const colArr = card[cols[c]]
-      const val    = c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r]
-      const numVal = parseInt(val)
-      const isCalled  = drawn.includes(numVal)
-      const isMarked  = markedSet.has(idx)
+      const cell = flatCells[idx]
+      const val = cell.val
+      const isCalled = drawnSet.has(val)
+      const isMarked = markedSet.has(idx)
       let tdClass = ''
       if (winBlink && winBlink.includes(idx)) {
         tdClass = 'win-blink'
@@ -151,7 +224,7 @@ function BingoCard({ card, cardNum, ci, drawn, markedSet, autoMode, gameActive, 
         tdClass = 'callable'
       }
       const handleClick = (!autoMode && isCalled && !isMarked && gameActive && !gameEnded)
-        ? () => onManualMark(ci, idx, numVal)
+        ? () => onManualMark(ci, idx, val)
         : undefined
       cells.push(
         <td key={c} className={tdClass} data-val={val} data-idx={idx} onClick={handleClick}>{val}</td>
@@ -163,7 +236,7 @@ function BingoCard({ card, cardNum, ci, drawn, markedSet, autoMode, gameActive, 
     <div className="card-block" id={`cb${ci}`}>
       <table className="ct" id={`ct${ci}`}>
         <thead>
-          <tr>{cols.map(c => <th key={c} className={c}>{c.toUpperCase()}</th>)}</tr>
+          <tr>{COLS.map(c => <th key={c} className={c}>{c.toUpperCase()}</th>)}</tr>
         </thead>
         <tbody>{rows}</tbody>
       </table>
@@ -180,10 +253,10 @@ function BingoCard({ card, cardNum, ci, drawn, markedSet, autoMode, gameActive, 
       </button>
     </div>
   )
-}
+})
 
 // ── Winner Overlay ────────────────────────────────────────
-function WinnerOverlay({ show, winners, playerKey, currentPrize, drawn, cdSec }) {
+function WinnerOverlay({ show, winners, playerKey, currentPrize, drawnSet, cdSec }) {
   const canvasRef = useRef(null)
   const fireworksStarted = useRef(false)
 
@@ -196,15 +269,15 @@ function WinnerOverlay({ show, winners, playerKey, currentPrize, drawn, cdSec })
 
   if (!winners || !winners.length) return null
 
-  const total      = winners.length
-  const split      = Math.floor(currentPrize / total)
-  const myWins     = winners.filter(w => w.playerKey === playerKey)
-  const iWon       = myWins.length > 0
-  const myShare    = split * myWins.length
+  const total = winners.length
+  const split = Math.floor(currentPrize / total)
+  const myWins = winners.filter(w => w.playerKey === playerKey)
+  const iWon = myWins.length > 0
+  const myShare = split * myWins.length
 
-  const first      = winners[0]
-  const fPhone     = first.phone || ''
-  const maskedFirst = fPhone.length > 4 ? fPhone.slice(0,2) + '*' + fPhone.slice(-4) : fPhone
+  const first = winners[0]
+  const fPhone = first.phone || ''
+  const maskedFirst = fPhone.length > 4 ? fPhone.slice(0, 2) + '*' + fPhone.slice(-4) : fPhone
   const otherCount = total - 1
 
   return (
@@ -228,9 +301,9 @@ function WinnerOverlay({ show, winners, playerKey, currentPrize, drawn, cdSec })
               {first.name || 'Anonymous'} ({maskedFirst})
             </span>
             {otherCount === 1 && (() => {
-              const sec    = winners[1]
+              const sec = winners[1]
               const sPhone = sec.phone || ''
-              const maskedSec = sPhone.length > 4 ? sPhone.slice(0,2) + '*' + sPhone.slice(-4) : sPhone
+              const maskedSec = sPhone.length > 4 ? sPhone.slice(0, 2) + '*' + sPhone.slice(-4) : sPhone
               return (
                 <>
                   <span className="wo-and-others">and</span>
@@ -258,9 +331,9 @@ function WinnerOverlay({ show, winners, playerKey, currentPrize, drawn, cdSec })
             </div>
           )}
           {winners.map((w, i) => {
-            const isMe  = w.playerKey === playerKey
-            const ph    = w.phone || 'N/A'
-            const masked = ph.length > 6 ? ph.slice(0,3) + '·'.repeat(Math.max(0, ph.length - 6)) + ph.slice(-3) : ph
+            const isMe = w.playerKey === playerKey
+            const ph = w.phone || 'N/A'
+            const masked = ph.length > 6 ? ph.slice(0, 3) + '·'.repeat(Math.max(0, ph.length - 6)) + ph.slice(-3) : ph
             return (
               <div key={i} className={`wo-card-block${isMe ? ' is-me' : ''}`}>
                 <div className="wo-card-top">
@@ -280,7 +353,7 @@ function WinnerOverlay({ show, winners, playerKey, currentPrize, drawn, cdSec })
                   <div className="wo-meta-pill">Card <strong>#{w.cardNum || '?'}</strong></div>
                   <div className="wo-pattern-badge">{w.pattern || '?'}</div>
                 </div>
-                <WoTable flat={w.cardFull || []} pi={w.patternIndices || []} drawn={drawn} />
+                <WoTable flat={w.cardFull || []} pi={w.patternIndices || []} drawnSet={drawnSet} />
               </div>
             )
           })}
@@ -291,69 +364,114 @@ function WinnerOverlay({ show, winners, playerKey, currentPrize, drawn, cdSec })
 }
 
 export default function GamePage() {
-  const navigate      = useNavigate()
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const forceSpec     = searchParams.get('spectator') === 'true'
+  const forceSpec = searchParams.get('spectator') === 'true'
 
-  const user = (() => { try { return JSON.parse(localStorage.getItem('bingoUser') || '{}') } catch { return {} } })()
-  const rawCards = (() => { try { return JSON.parse(localStorage.getItem('selectedCartelas') || 'null') } catch { return null } })()
-  
-  const urlPlayers = searchParams.get('players') || '0'
-  const urlBet     = searchParams.get('bet') || '10'
-  const urlDerash  = searchParams.get('derash') || '0'
+  // ── One-time snapshot of localStorage / URL data ─────────────────────
+  // NOTE: previously this was plain code in the component body, which meant
+  // JSON.parse(localStorage...) ran fresh (new object identities) on every
+  // single render — defeating memoization everywhere downstream and doing
+  // pointless work on every ball draw. useState's lazy initializer runs
+  // exactly once, guaranteed.
+  const [initial] = useState(() => {
+    let user = {}
+    try { user = JSON.parse(localStorage.getItem('bingoUser') || '{}') } catch (e) {}
+    let rawCards = null
+    try { rawCards = JSON.parse(localStorage.getItem('selectedCartelas') || 'null') } catch (e) {}
 
-  const stakeAmt   = urlBet 
-  const userKey     = (user.telegram_id || user.phone || '').toString()
-  const playerKey   = sanitizeKey(userKey)
+    const urlPlayers = searchParams.get('players') || '0'
+    const urlBet = searchParams.get('bet') || '10'
+    const urlDerash = searchParams.get('derash') || '0'
 
-  const cards    = rawCards ? (Array.isArray(rawCards) ? rawCards : [rawCards]) : null
-  const cardNums = cards ? cards.map(c => c.id) : []
+    const cards = rawCards ? (Array.isArray(rawCards) ? rawCards : [rawCards]) : null
+    const cardNums = cards ? cards.map(c => c.id) : []
+    const userKey = (user.telegram_id || user.phone || '').toString()
+    const playerKey = sanitizeKey(userKey)
 
-  const isSpectator = !cards || cards.length === 0
+    return {
+      user, cards, cardNums, playerKey,
+      stakeAmt: urlBet,
+      urlPlayers: parseInt(urlPlayers),
+      urlDerash: parseInt(urlDerash),
+      isSpectator: !cards || cards.length === 0
+    }
+  })
+
+  const { user, cards, cardNums, playerKey, stakeAmt, isSpectator } = initial
+
+  // Precompute flat card layouts + value→index maps ONCE per card set,
+  // instead of re-deriving the b/i/n/g/o column mapping on every render
+  // and on every single ball draw for every card.
+  const cardLookups = useMemo(
+    () => (cards ? cards.map(buildFlatCard) : []),
+    [cards]
+  )
+  const cardValueMaps = useMemo(
+    () => cardLookups.map(flat => {
+      const m = new Map()
+      flat.forEach(cell => { if (!cell.isFree) m.set(cell.val, cell.idx) })
+      return m
+    }),
+    [cardLookups]
+  )
 
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
-  const [drawn, setDrawn]             = useState([])
-  const [isMuted, setIsMuted]         = useState(true)
-  const [autoMode, setAutoMode]       = useState(false)
-  
-  const [currentPrize, setCurrentPrize] = useState(parseInt(urlDerash))
-  const [playerCount, setPlayerCount]   = useState(parseInt(urlPlayers))
-  const [gameNum, setGameNum]           = useState('--')
-  const [gameId, setGameId]             = useState('LOADING...')
-  const [calledCount, setCalledCount]   = useState('0/75')
-  const [histBalls, setHistBalls]       = useState([])
+  const [drawn, setDrawn] = useState([])
+  const [isMuted, setIsMuted] = useState(true)
+  const [autoMode, setAutoMode] = useState(false)
 
-  const RECONNECT_KEY = `ydm_gamestate_${gameId}`
+  const [currentPrize, setCurrentPrize] = useState(initial.urlDerash)
+  const [playerCount, setPlayerCount] = useState(initial.urlPlayers)
+  const [gameNum, setGameNum] = useState('--')
+  const [gameId, setGameId] = useState('LOADING...')
+  const [calledCount, setCalledCount] = useState('0/75')
+  const [histBalls, setHistBalls] = useState([])
+  const [justCalled, setJustCalled] = useState(null)
 
-  const [markedSets, setMarkedSets]   = useState(() => cards ? cards.map(() => new Set([12])) : [])
-  const [winBlinks, setWinBlinks]     = useState(() => cards ? cards.map(() => null) : [])
-  const [claimReady, setClaimReady]   = useState(() => cards ? cards.map(() => false) : [])
+  const [markedSets, setMarkedSets] = useState(() => cards ? cards.map(() => new Set([12])) : [])
+  const [winBlinks, setWinBlinks] = useState(() => cards ? cards.map(() => null) : [])
+  const [claimReady, setClaimReady] = useState(() => cards ? cards.map(() => false) : [])
 
-  const [gameActive, setGameActive]   = useState(false)
-  const [gameEnded, setGameEnded]     = useState(false)
+  const [gameActive, setGameActive] = useState(false)
+  const [gameEnded, setGameEnded] = useState(false)
   const [gameStarted, setGameStarted] = useState(false)
+  const [preGameCountdown, setPreGameCountdown] = useState(null)
+  const [showStartTransition, setShowStartTransition] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
 
   const [overlayShown, setOverlayShown] = useState(false)
-  const [winnersList, setWinnersList]   = useState([])
+  const [winnersList, setWinnersList] = useState([])
   const [overlayPrize, setOverlayPrize] = useState(0)
-  const [cdSec, setCdSec]               = useState(REDIRECT_SEC)
+  const [cdSec, setCdSec] = useState(REDIRECT_SEC)
 
-  const cleanupDoneRef  = useRef(false)
-  const iAmTheEnderRef  = useRef(false)
+  // O(1) membership testing instead of `.includes()` scans (was O(n) per
+  // cell, per card, on every render — noticeable once dozens of numbers
+  // have been drawn).
+  const drawnSet = useMemo(() => new Set(drawn), [drawn])
+
+  const cleanupDoneRef = useRef(false)
+  const iAmTheEnderRef = useRef(false)
   const overlayShownRef = useRef(false)
-  const gameEndedRef    = useRef(false)
-  const gameActiveRef   = useRef(false)
-  const gameStartedRef  = useRef(false)
-  const drawnRef        = useRef([])
-  const markedSetsRef   = useRef(markedSets)
-  const autoModeRef     = useRef(false)
-  const autoTriggered   = useRef({})
-  const cdTimerRef      = useRef(null)
-  const syncTickerRef   = useRef(null)
-  const drawLoopRef     = useRef(null)
+  const gameEndedRef = useRef(false)
+  const gameActiveRef = useRef(false)
+  const gameStartedRef = useRef(false)
+  const drawnRef = useRef([])
+  const drawnSetRef = useRef(new Set())
+  const markedSetsRef = useRef(markedSets)
+  const autoModeRef = useRef(false)
+  const autoTriggered = useRef({})
+  const cdTimerRef = useRef(null)
+  const syncTickerRef = useRef(null)
+  const drawLoopRef = useRef(null)
+  const gameIdRef = useRef(null)
+  const reconnectKeyRef = useRef(null)
+  const ballsToDrawRef = useRef(null)
+  const startAttemptInFlightRef = useRef(false)
+  const startTransitionTimerRef = useRef(null)
 
-  useEffect(() => { drawnRef.current = drawn }, [drawn])
+  useEffect(() => { drawnRef.current = drawn; drawnSetRef.current = drawnSet }, [drawn, drawnSet])
   useEffect(() => { markedSetsRef.current = markedSets }, [markedSets])
   useEffect(() => { autoModeRef.current = autoMode }, [autoMode])
   useEffect(() => { gameEndedRef.current = gameEnded }, [gameEnded])
@@ -370,10 +488,27 @@ export default function GamePage() {
     }
   }, [])
 
+  // ── Reconnect-state persistence ───────────────────────────────────────
+  // FIX: previously RECONNECT_KEY was built from `gameId` state, but every
+  // listener that calls persistState()/restoreStateFromStorage() lives
+  // inside the mount-once useEffect below, so it closed over `gameId` as it
+  // was AT MOUNT TIME ("LOADING...") forever — the real game id was never
+  // used, and there was no check binding a saved snapshot to the specific
+  // game/player it belonged to. That is exactly the kind of cross-game
+  // contamination bug that's easy to reintroduce. Fixed by keying off a ref
+  // that's set once the real game id is known, and by storing/validating
+  // both gameId and playerKey inside the saved payload itself.
+  function setReconnectKey(realGameId) {
+    gameIdRef.current = realGameId
+    reconnectKeyRef.current = `ydm_gamestate_${realGameId}_${playerKey}`
+  }
+
   function persistState(newDrawn, newMarked) {
-    if (gameEndedRef.current || isSpectator || forceSpec || !cards || !gameId) return
+    if (gameEndedRef.current || isSpectator || forceSpec || !cards || !reconnectKeyRef.current) return
     try {
-      localStorage.setItem(RECONNECT_KEY, JSON.stringify({
+      localStorage.setItem(reconnectKeyRef.current, JSON.stringify({
+        gameId: gameIdRef.current,
+        playerKey,
         drawn: newDrawn || drawnRef.current,
         markedSets: (newMarked || markedSetsRef.current).map(s => [...s]),
         autoTriggered: autoTriggered.current,
@@ -384,12 +519,14 @@ export default function GamePage() {
   }
 
   function restoreStateFromStorage() {
-    if (isSpectator || forceSpec || !cards) return false
+    if (isSpectator || forceSpec || !cards || !reconnectKeyRef.current) return false
     try {
-      const raw = localStorage.getItem(RECONNECT_KEY)
+      const raw = localStorage.getItem(reconnectKeyRef.current)
       if (!raw) return false
       const saved = JSON.parse(raw)
-      if (Date.now() - saved.ts > 7200000) { localStorage.removeItem(RECONNECT_KEY); return false }
+      if (Date.now() - saved.ts > 7200000) { localStorage.removeItem(reconnectKeyRef.current); return false }
+      // Only trust a saved snapshot if it actually belongs to this game + player.
+      if (saved.gameId !== gameIdRef.current || saved.playerKey !== playerKey) return false
       if (saved.markedSets && saved.markedSets.length === cards.length) {
         const restored = saved.markedSets.map(arr => new Set(arr))
         setMarkedSets(restored)
@@ -431,9 +568,9 @@ export default function GamePage() {
     }, 2000)
   }
 
-  function handleManualMark(ci, idx, val) {
+  const handleManualMark = useCallback((ci, idx, val) => {
     if (!gameActiveRef.current || autoModeRef.current || gameEndedRef.current) return
-    if (!drawnRef.current.includes(val)) return
+    if (!drawnSetRef.current.has(val)) return
     setMarkedSets(prev => {
       const next = prev.map((ms, i) => {
         if (i !== ci) return ms
@@ -447,11 +584,11 @@ export default function GamePage() {
       persistState(drawnRef.current, next)
       return next
     })
-  }
+  }, [])
 
-  function handleManualClaim(ci) {
+  const handleManualClaim = useCallback((ci) => {
     if (!gameActiveRef.current || autoModeRef.current || autoTriggered.current[ci] || gameEndedRef.current) return
-    const ms  = markedSetsRef.current[ci]
+    const ms = markedSetsRef.current[ci]
     const win = PATTERNS.find(p => p.i.every(i => ms.has(i)))
     if (!win) return
     autoTriggered.current[ci] = true
@@ -464,20 +601,11 @@ export default function GamePage() {
       setWinBlinks(prev => { const next = [...prev]; next[ci] = null; return next })
       doClaim(ci, win.n, win.i, markedSetsRef.current)
     }, 2000)
-  }
+  }, [])
 
   async function doClaim(ci, patName, patIdx, currentMarked) {
     if (!gameActiveRef.current || gameEndedRef.current) return
-    const card = cards[ci]
-    const cols = ['b','i','n','g','o']
-    const flat = []
-    for (let r = 0; r < 5; r++) {
-      for (let c = 0; c < 5; c++) {
-        if (r === 2 && c === 2) { flat.push('FREE'); continue }
-        const colArr = card[cols[c]]
-        flat.push(String(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r]))
-      }
-    }
+    const flat = cardLookups[ci].map(cell => (cell.isFree ? 'FREE' : String(cell.val)))
     const winRef = push(ref(db, 'activeGame/winners'))
     await set(winRef, {
       name: user.name || 'Anonymous',
@@ -487,7 +615,7 @@ export default function GamePage() {
       pattern: patName,
       cardFull: flat,
       patternIndices: patIdx,
-      gameId,
+      gameId: gameIdRef.current,
       timestamp: serverTimestamp()
     })
     const tx = await runTransaction(ref(db, 'activeGame/ended'), cur => cur === true ? undefined : true)
@@ -501,19 +629,11 @@ export default function GamePage() {
     if (isSpectator || forceSpec || !cards) return
     setMarkedSets(prev => {
       const next = prev.map((ms, ci) => {
-        const card = cards[ci]
-        const cols = ['b','i','n','g','o']
         const newMs = new Set(ms)
         if (newAuto) {
-          for (let r = 0; r < 5; r++) {
-            for (let c = 0; c < 5; c++) {
-              const idx = r * 5 + c
-              if (idx === 12) continue
-              const colArr = card[cols[c]]
-              const val = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
-              if (drawnRef.current.includes(val)) newMs.add(idx)
-            }
-          }
+          cardLookups[ci].forEach(cell => {
+            if (!cell.isFree && drawnSetRef.current.has(cell.val)) newMs.add(cell.idx)
+          })
         }
         return newMs
       })
@@ -535,7 +655,7 @@ export default function GamePage() {
     if (cleanupDoneRef.current) return
     cleanupDoneRef.current = true
     ;['selectedCartelas', 'cartelaNumbers'].forEach(k => localStorage.removeItem(k))
-    try { localStorage.removeItem(RECONNECT_KEY) } catch (e) {}
+    try { if (reconnectKeyRef.current) localStorage.removeItem(reconnectKeyRef.current) } catch (e) {}
     navigate('/cartela')
   }
 
@@ -585,11 +705,11 @@ export default function GamePage() {
     const wList = Object.values(winnersMap || {})
     if (!wList.length) { safeRedirect(); return }
 
-    const total    = wList.length
-    const myWins   = wList.filter(w => w.playerKey === playerKey)
-    const iWon     = myWins.length > 0
-    const split    = Math.floor(overlayPrizeRef.current / total)
-    const myShare  = split * myWins.length
+    const total = wList.length
+    const myWins = wList.filter(w => w.playerKey === playerKey)
+    const iWon = myWins.length > 0
+    const split = Math.floor(overlayPrizeRef.current / total)
+    const myShare = split * myWins.length
 
     playWinnerSound(false)
 
@@ -618,20 +738,13 @@ export default function GamePage() {
 
   function reapplyToCards(currentDrawn, currentMarked, currentAuto) {
     if (!cards) return currentMarked
+    const dSet = new Set(currentDrawn)
     const newMarked = currentMarked.map((ms, ci) => {
-      const card = cards[ci]
-      const cols = ['b','i','n','g','o']
       const newMs = new Set(ms)
       if (currentAuto) {
-        for (let r = 0; r < 5; r++) {
-          for (let c = 0; c < 5; c++) {
-            const idx = r * 5 + c
-            if (idx === 12) continue
-            const colArr = card[cols[c]]
-            const val    = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
-            if (currentDrawn.includes(val)) newMs.add(idx)
-          }
-        }
+        cardLookups[ci].forEach(cell => {
+          if (!cell.isFree && dSet.has(cell.val)) newMs.add(cell.idx)
+        })
       }
       return newMs
     })
@@ -649,8 +762,10 @@ export default function GamePage() {
       if (!online) { wasOffline = true; persistState() }
       else if (wasOffline && online) {
         wasOffline = false
+        setIsSyncing(true)
         const endedSnap = await get(ref(db, 'activeGame/ended'))
         if (endedSnap.val() === true) {
+          setIsSyncing(false)
           gameEndedRef.current = true; gameActiveRef.current = false
           setGameEnded(true); setGameActive(false)
           const wSnap = await get(ref(db, 'activeGame/winners'))
@@ -658,7 +773,8 @@ export default function GamePage() {
           if (!overlayShownRef.current) safeRedirect()
           return
         }
-        resyncAfterReconnect()
+        await resyncAfterReconnect()
+        setIsSyncing(false)
       }
     })
   }
@@ -679,6 +795,7 @@ export default function GamePage() {
       const newDrawn = nums.map(d => d.number)
       setDrawn(newDrawn)
       drawnRef.current = newDrawn
+      drawnSetRef.current = new Set(newDrawn)
       updateHistFrom(newDrawn)
       const newMarked = reapplyToCards(newDrawn, markedSetsRef.current, autoModeRef.current)
       persistState(newDrawn, newMarked)
@@ -701,6 +818,19 @@ export default function GamePage() {
           return
         }
 
+        // Resolve the real game id BEFORE touching localStorage snapshots,
+        // so reconnect-state restoration can actually validate against it
+        // (this used to run before gameId was known, so the validation
+        // never had anything real to check against).
+        const gameNumSnap = await get(ref(db, 'activeGame/gameNum'))
+        if (gameNumSnap.exists()) {
+          const num = gameNumSnap.val()
+          setGameNum(num)
+          const realId = `GAME_${num}`
+          setGameId(realId)
+          setReconnectKey(realId)
+        }
+
         restoreStateFromStorage()
 
         const numSnap = await get(ref(db, 'activeGame/drawnNumbers'))
@@ -710,6 +840,7 @@ export default function GamePage() {
           nums.sort((a, b) => (a.drawnAt || 0) - (b.drawnAt || 0))
           const initDrawn = nums.map(d => d.number)
           drawnRef.current = initDrawn
+          drawnSetRef.current = new Set(initDrawn)
           setDrawn(initDrawn)
           updateHistFrom(initDrawn)
           if (!isSpectator && !forceSpec && cards) {
@@ -720,15 +851,15 @@ export default function GamePage() {
         const startedSnap = await get(ref(db, 'activeGame/started'))
         if (startedSnap.val() === true) {
           gameStartedRef.current = true
-          gameActiveRef.current  = true
+          gameActiveRef.current = true
           setGameStarted(true)
           setGameActive(true)
         }
 
         const wSnap = await get(ref(db, 'activeGame/winners'))
-        if (wSnap.exists()) { 
+        if (wSnap.exists()) {
           handleWinners(wSnap.val())
-          return 
+          return
         }
 
         if (unmounted) return
@@ -737,27 +868,22 @@ export default function GamePage() {
           if (gameEndedRef.current) return
           const d = snap.val()
           if (!d?.number) return
-          if (drawnRef.current.includes(d.number)) return
+          if (drawnSetRef.current.has(d.number)) return
           const n = d.number
           const newDrawn = [...drawnRef.current, n]
           drawnRef.current = newDrawn
+          drawnSetRef.current = new Set(newDrawn)
           setDrawn(newDrawn)
           updateHistFrom(newDrawn)
+          setJustCalled(n)
           if (!isMuted) playNum(n, false)
           if (!isSpectator && !forceSpec && gameActiveRef.current && cards) {
             setMarkedSets(prev => {
               const next = prev.map((ms, ci) => {
-                const card = cards[ci]
-                const cols = ['b','i','n','g','o']
                 const newMs = new Set(ms)
-                for (let r = 0; r < 5; r++) {
-                  for (let c = 0; c < 5; c++) {
-                    const idx = r * 5 + c
-                    if (idx === 12) continue
-                    const colArr = card[cols[c]]
-                    const val = parseInt(c === 2 ? (r < 2 ? colArr[r] : colArr[r - 1]) : colArr[r])
-                    if (val === n && autoModeRef.current) newMs.add(idx)
-                  }
+                if (autoModeRef.current) {
+                  const idx = cardValueMaps[ci].get(n)
+                  if (idx !== undefined) newMs.add(idx)
                 }
                 return newMs
               })
@@ -798,75 +924,118 @@ export default function GamePage() {
           if (snap.val() === true && !gameStartedRef.current) {
             gameStartedRef.current = true; gameActiveRef.current = true
             setGameStarted(true); setGameActive(true)
+            setPreGameCountdown(null)
+            // Brief "starting" transition instead of an abrupt jump straight
+            // into a populated board, per request.
+            setShowStartTransition(true)
+            if (startTransitionTimerRef.current) clearTimeout(startTransitionTimerRef.current)
+            startTransitionTimerRef.current = setTimeout(() => setShowStartTransition(false), 900)
           }
         })
 
-        // Hostless Time Anchor Synchronization Loop
-        let targetEndTimestamp = null;
+        // Cache ballsToDraw once (it's written exactly once, at game start,
+        // and never changes afterwards) instead of re-fetching the whole
+        // activeGame object on every draw tick.
+        const unsubBalls = onValue(ref(db, 'activeGame/ballsToDraw'), snap => {
+          ballsToDrawRef.current = snap.exists() ? snap.val() : null
+        })
+
+        // ── Timer-driven game start ───────────────────────────────────
+        // CartelaPage writes activeGame/targetEndTime (and sets
+        // activeGame/status = 'countdown') when the lobby countdown begins.
+        // Every connected client watches that timestamp locally; whichever
+        // client's clock crosses it first attempts to flip the game to
+        // "started". Only a single lightweight field (status) is contended
+        // over via transaction; the client that actually wins that flip is
+        // the only one that does the heavier one-time setup (shuffling the
+        // balls and writing them). Previously this ran a transaction on the
+        // *entire* activeGame object, repeatedly, from every client, every
+        // 250ms, until the started flag propagated back down — needlessly
+        // expensive for larger lobbies.
+        let targetEndTimestamp = null
         const unsubCountdown = onValue(ref(db, 'activeGame/targetEndTime'), snap => {
-          targetEndTimestamp = snap.val();
-        });
+          targetEndTimestamp = snap.val()
+        })
 
-        if (syncTickerRef.current) clearInterval(syncTickerRef.current);
-        syncTickerRef.current = setInterval(() => {
-          if (!targetEndTimestamp || gameStartedRef.current) return;
-          const remainingSec = Math.max(0, Math.ceil((targetEndTimestamp - Date.now()) / 1000));
-          if (remainingSec <= 0) {
-            // First device to register expiration builds the secure match payload
-            runTransaction(ref(db, 'activeGame'), (game) => {
-              if (!game) return game;
-              if (game.status === 'countdown') {
-                game.status = 'started';
-                game.started = true;
-                // Generate a shared authoritative pseudo-random collection of 75 elements
-                if (!game.ballsToDraw) {
-                  const arr = Array.from({ length: 75 }, (_, i) => i + 1);
-                  for (let i = arr.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [arr[i], arr[j]] = [arr[j], arr[i]];
-                  }
-                  game.ballsToDraw = arr;
-                  game.nextBallIndex = 0;
-                }
-              }
-              return game;
-            });
+        if (syncTickerRef.current) clearInterval(syncTickerRef.current)
+        syncTickerRef.current = setInterval(async () => {
+          if (gameStartedRef.current) {
+            clearInterval(syncTickerRef.current)
+            syncTickerRef.current = null
+            return
           }
-        }, 250);
+          if (!targetEndTimestamp) return
+          const remainingSec = Math.max(0, Math.ceil((targetEndTimestamp - Date.now()) / 1000))
+          setPreGameCountdown(remainingSec)
+          if (remainingSec > 0 || startAttemptInFlightRef.current) return
 
-        // Hostless stream listener that triggers balls into activeGame/drawnNumbers sequentially
-        if (drawLoopRef.current) clearInterval(drawLoopRef.current);
-        drawLoopRef.current = setInterval(async () => {
-          if (!gameStartedRef.current || gameEndedRef.current) return;
-          
-          const snap = await get(ref(db, 'activeGame'));
-          if (!snap.exists()) return;
-          const game = snap.val();
-          if (game.status !== 'started' || !game.ballsToDraw) return;
-          
-          const idx = game.nextBallIndex ?? 0;
-          if (idx >= game.ballsToDraw.length) return;
-          
-          // Secure a transaction lock to draw the next ball authoritatively without overlap
-          runTransaction(ref(db, 'activeGame/nextBallIndex'), (curIdx) => {
-            if (curIdx === null || curIdx === undefined) return 0;
-            if (curIdx === idx) {
-              const ballNumber = game.ballsToDraw[idx];
-              push(ref(db, 'activeGame/drawnNumbers'), {
-                number: ballNumber,
-                drawnAt: serverTimestamp()
-              });
-              return curIdx + 1;
+          startAttemptInFlightRef.current = true
+          try {
+            let before = null
+            const statusResult = await runTransaction(ref(db, 'activeGame/status'), cur => {
+              before = cur
+              if (cur === 'countdown') return 'started'
+              return cur
+            })
+            if (statusResult.committed && before === 'countdown') {
+              // We're the one client responsible for one-time setup.
+              const balls = shuffledBalls()
+              await update(ref(db, 'activeGame'), {
+                started: true,
+                ballsToDraw: balls,
+                nextBallIndex: 0
+              })
             }
-            return curIdx;
-          });
-        }, 3500); // Draws a new bingo ball every 3.5 seconds
+          } catch (e) {
+            // will retry next tick
+          } finally {
+            startAttemptInFlightRef.current = false
+          }
+        }, 250)
+
+        // Hostless ball-draw loop.
+        // FIX: the previous version called push() (a network side effect)
+        // *inside* the runTransaction update function. Firebase may invoke
+        // that function multiple times speculatively while resolving
+        // contention between clients, so a side effect inside it could fire
+        // more than once for what should be a single logical draw — this is
+        // exactly the kind of bug that causes duplicate number draws. Now
+        // the transaction only ever does a pure counter increment; the push
+        // happens once, after the promise resolves, and only by the client
+        // whose attempt is confirmed (via the captured pre-transaction
+        // value) to be the one that actually advanced the counter.
+        if (drawLoopRef.current) clearInterval(drawLoopRef.current)
+        drawLoopRef.current = setInterval(async () => {
+          if (!gameStartedRef.current || gameEndedRef.current) return
+          const balls = ballsToDrawRef.current
+          if (!balls) return
+
+          let capturedBefore = null
+          try {
+            const result = await runTransaction(ref(db, 'activeGame/nextBallIndex'), curIdx => {
+              const cur = curIdx ?? 0
+              capturedBefore = cur
+              if (cur >= balls.length) return cur
+              return cur + 1
+            })
+            if (result.committed && capturedBefore !== null && capturedBefore < balls.length) {
+              await push(ref(db, 'activeGame/drawnNumbers'), {
+                number: balls[capturedBefore],
+                drawnAt: serverTimestamp()
+              })
+            }
+          } catch (e) {
+            // will retry next tick
+          }
+        }, 3500)
 
         const unsubMeta = onValue(ref(db, 'activeGame/gameNum'), snap => {
           if (snap.exists()) {
             const num = snap.val()
             setGameNum(num)
-            setGameId(`GAME_${num}`)
+            const realId = `GAME_${num}`
+            setGameId(realId)
+            if (!reconnectKeyRef.current) setReconnectKey(realId)
           }
         })
 
@@ -890,6 +1059,7 @@ export default function GamePage() {
           unsubWinners()
           unsubEnded()
           unsubStarted()
+          unsubBalls()
           unsubCountdown()
           unsubMeta()
           unsubPlayers()
@@ -897,6 +1067,7 @@ export default function GamePage() {
           if (syncTickerRef.current) clearInterval(syncTickerRef.current)
           if (drawLoopRef.current) clearInterval(drawLoopRef.current)
           if (cdTimerRef.current) clearInterval(cdTimerRef.current)
+          if (startTransitionTimerRef.current) clearTimeout(startTransitionTimerRef.current)
         }
       } catch (error) {
         setLoadError(error.message || 'Failed to load game')
@@ -908,6 +1079,13 @@ export default function GamePage() {
     return () => { unmounted = true; cleanupPromise.then(fn => fn && fn()) }
   }, [])
 
+  // Clear the "just called" pulse shortly after each draw.
+  useEffect(() => {
+    if (justCalled === null) return
+    const t = setTimeout(() => setJustCalled(null), 800)
+    return () => clearTimeout(t)
+  }, [justCalled])
+
   const handleRetry = () => {
     setIsLoading(true)
     setLoadError(null)
@@ -916,16 +1094,22 @@ export default function GamePage() {
 
   if (isLoading) return <LoadingScreen />
   if (loadError) return <ErrorScreen message={loadError} onRetry={handleRetry} />
+  if (showStartTransition) return <LoadingScreen label="ጨዋታው ተጀምሯል" />
 
   const boardCellsRendered = []
   for (let i = 1; i <= 75; i++) {
-    const isDrawn = drawn.includes(i)
-    const cls = isDrawn ? `bnum ${colClass(i)}` : 'bnum'
+    const isDrawn = drawnSet.has(i)
+    let cls = isDrawn ? `bnum ${colClass(i)}` : 'bnum'
+    if (justCalled === i) cls += ' just-called'
     boardCellsRendered.push(<div key={i} className={cls}>{i}</div>)
   }
 
   return (
     <>
+      <GameAnimStyles />
+
+      {isSyncing && <div className="sync-badge">🔄 Syncing…</div>}
+
       <div className="game-stats">
         <div className="stat gold">
           <div className="lbl">Derash</div>
@@ -949,6 +1133,12 @@ export default function GamePage() {
         </button>
       </div>
 
+      {!gameStarted && preGameCountdown !== null && preGameCountdown > 0 && (
+        <div className="starting-banner">
+          🎲 Game starts in {preGameCountdown}s
+        </div>
+      )}
+
       <div className="game-main">
         <div className="game-left">
           <div className="board-hdr">
@@ -967,14 +1157,17 @@ export default function GamePage() {
 
         <div className="game-right">
           <div className="hist-row">
-            {[4,3,2,1,0].map(i => {
+            {[4, 3, 2, 1, 0].map(i => {
               const n = histBalls[i]
               const isLatest = i === 0
               if (!n) return (
                 <div key={i} className={`hbub${isLatest ? ' latest' : ''}`}>--</div>
               )
               return (
-                <div key={i} className={`hbub ${bubClass(n)}${isLatest ? ' latest' : ''}`}>
+                <div
+                  key={isLatest ? `latest-${n}` : i}
+                  className={`hbub ${bubClass(n)}${isLatest ? ' latest pop-anim' : ''}`}
+                >
                   {letter(n)}{n}
                 </div>
               )
@@ -998,10 +1191,10 @@ export default function GamePage() {
             ) : cards && cards.map((card, ci) => (
               <BingoCard
                 key={ci}
-                card={card}
+                flatCells={cardLookups[ci]}
                 cardNum={cardNums[ci] || (ci + 1)}
                 ci={ci}
-                drawn={drawn}
+                drawnSet={drawnSet}
                 markedSet={markedSets[ci] || new Set([12])}
                 autoMode={autoMode}
                 gameActive={gameActive}
@@ -1036,7 +1229,7 @@ export default function GamePage() {
         winners={winnersList}
         playerKey={playerKey}
         currentPrize={overlayPrize}
-        drawn={drawn}
+        drawnSet={drawnSet}
         cdSec={cdSec}
       />
     </>
