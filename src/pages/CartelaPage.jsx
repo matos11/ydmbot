@@ -129,11 +129,11 @@ export default function CartelaPage() {
     if (!playerKey) return;
 
     let targetEndTimestamp = null;
-    let currentStatus = 'waiting';
+    let hasTriggeredStart = false; // Prevents race condition loops when timer expires
 
     if (clientTimerRef.current) clearInterval(clientTimerRef.current);
     
-    // UI-ONLY Countdown loop
+    // UI-ONLY Countdown loop running locally
     clientTimerRef.current = setInterval(() => {
       if (!targetEndTimestamp) return;
 
@@ -145,14 +145,16 @@ export default function CartelaPage() {
       } else {
         setTimerVal('0s');
         
-        // Only trigger the state shift if the client detects it hasn't changed yet
-        if (currentStatus === 'countdown') {
-          currentStatus = 'started'; // Local guard to prevent repetitive calls
-          runTransaction(ref(db, 'activeGame'), (game) => {
-            if (!game || game.status !== 'countdown') return game;
-            game.status = 'started';
-            game.started = true;
-            return game;
+        // Use flag constraint to guarantee only one update request clears per device execution
+        if (!hasTriggeredStart) {
+          hasTriggeredStart = true; 
+          
+          update(ref(db, 'activeGame'), {
+            status: 'started',
+            started: true
+          }).catch(err => {
+            console.error("Failed to start game authoritatively:", err);
+            hasTriggeredStart = false; 
           });
         }
       }
@@ -180,19 +182,19 @@ export default function CartelaPage() {
 
         if (count >= MIN_PLAYERS) {
           runTransaction(ref(db, 'activeGame'), (currentData) => {
-            if (!currentData || currentData.status === 'waiting') {
+            if (!currentData || currentData.status === 'waiting' || !currentData.status) {
               const gameTargetTime = Date.now() + 40000; 
               return { 
                 status: 'countdown', 
                 targetEndTime: gameTargetTime,
-                started: false 
+                started: false,
+                gameNum: currentData?.gameNum || 1
               };
             }
             return currentData;
           });
         } else {
-          // If players fall below minimum, reset to waiting safely via transaction or fast update
-          update(ref(db, 'activeGame'), { status: 'waiting', targetEndTime: null });
+          update(ref(db, 'activeGame'), { status: 'waiting', targetEndTime: null, started: false });
         }
       }),
       onValue(ref(db, 'activeGame/gameNum'), snap => {
@@ -200,18 +202,16 @@ export default function CartelaPage() {
       }),
       onValue(ref(db, 'activeGame'), snap => {
         const game = snap.val() || {};
-        currentStatus = game.status || 'waiting';
 
         if (game.status === 'countdown' && game.targetEndTime) {
           targetEndTimestamp = game.targetEndTime;
-        } else {
+        } else if (game.status === 'started') {
           targetEndTimestamp = null;
-          setTimerVal('--');
-        }
-
-        // Authoritative Trigger for page routing
-        if (game.status === 'started') {
-          localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
+          setTimerVal('0s');
+          
+          // Clean data capture from safe ref pointers
+          const currentSelected = stateRef.current.selectedCards;
+          localStorage.setItem('selectedCartelas', JSON.stringify(currentSelected));
           
           const params = new URLSearchParams({
             players: stateRef.current.pCount.toString(),
@@ -220,6 +220,10 @@ export default function CartelaPage() {
           });
           
           navigate(`/game?${params.toString()}`);
+        } else {
+          targetEndTimestamp = null;
+          hasTriggeredStart = false; // Reset setup flags for upcoming game rounds
+          setTimerVal('--');
         }
       })
     ];
