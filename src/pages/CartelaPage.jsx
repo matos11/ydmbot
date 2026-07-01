@@ -128,10 +128,12 @@ export default function CartelaPage() {
   useEffect(() => {
     if (!playerKey) return;
 
-    // Local client timer management depending on authoritative server target values
     let targetEndTimestamp = null;
+    let currentStatus = 'waiting';
 
     if (clientTimerRef.current) clearInterval(clientTimerRef.current);
+    
+    // UI-ONLY Countdown loop
     clientTimerRef.current = setInterval(() => {
       if (!targetEndTimestamp) return;
 
@@ -142,13 +144,17 @@ export default function CartelaPage() {
         setTimerVal(`${remainingSec}s`);
       } else {
         setTimerVal('0s');
-        // Authoritatively transition into a safe game-start routine
-        runTransaction(ref(db, 'activeGame'), (game) => {
-          if (!game || game.status !== 'countdown') return game;
-          game.status = 'started';
-          game.started = true;
-          return game;
-        });
+        
+        // Only trigger the state shift if the client detects it hasn't changed yet
+        if (currentStatus === 'countdown') {
+          currentStatus = 'started'; // Local guard to prevent repetitive calls
+          runTransaction(ref(db, 'activeGame'), (game) => {
+            if (!game || game.status !== 'countdown') return game;
+            game.status = 'started';
+            game.started = true;
+            return game;
+          });
+        }
       }
     }, 250);
 
@@ -172,11 +178,10 @@ export default function CartelaPage() {
         const totalCards = players.reduce((acc, p) => acc + (p.cardCount || 0), 0);
         setPrize(Math.floor(totalCards * FIXED_FEE * PAY_MARGIN));
 
-        // Atomic Initialization using target anchors instead of loops
         if (count >= MIN_PLAYERS) {
           runTransaction(ref(db, 'activeGame'), (currentData) => {
             if (!currentData || currentData.status === 'waiting') {
-              const gameTargetTime = Date.now() + 40000; // Authoritative 40-second offset seed
+              const gameTargetTime = Date.now() + 40000; 
               return { 
                 status: 'countdown', 
                 targetEndTime: gameTargetTime,
@@ -186,6 +191,7 @@ export default function CartelaPage() {
             return currentData;
           });
         } else {
+          // If players fall below minimum, reset to waiting safely via transaction or fast update
           update(ref(db, 'activeGame'), { status: 'waiting', targetEndTime: null });
         }
       }),
@@ -194,23 +200,27 @@ export default function CartelaPage() {
       }),
       onValue(ref(db, 'activeGame'), snap => {
         const game = snap.val() || {};
+        currentStatus = game.status || 'waiting';
+
         if (game.status === 'countdown' && game.targetEndTime) {
           targetEndTimestamp = game.targetEndTime;
         } else {
           targetEndTimestamp = null;
           setTimerVal('--');
         }
-if (game.status === 'started') {
-  localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
-  
-  const params = new URLSearchParams({
-    players: stateRef.current.pCount.toString(),
-    bet: FIXED_FEE.toString(),
-    derash: stateRef.current.prize.toString()
-  });
-  
-  navigate(`/game?${params.toString()}`);
-}
+
+        // Authoritative Trigger for page routing
+        if (game.status === 'started') {
+          localStorage.setItem('selectedCartelas', JSON.stringify(stateRef.current.selectedCards));
+          
+          const params = new URLSearchParams({
+            players: stateRef.current.pCount.toString(),
+            bet: FIXED_FEE.toString(),
+            derash: stateRef.current.prize.toString()
+          });
+          
+          navigate(`/game?${params.toString()}`);
+        }
       })
     ];
 
